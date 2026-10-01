@@ -57,6 +57,11 @@ CREATE TABLE IF NOT EXISTS rides (
   payment_methods       TEXT NOT NULL DEFAULT 'cash',
   payment_details       TEXT,
   duration_minutes      INTEGER,
+  stops                 TEXT,
+  fare_per_km           INTEGER,
+  home_pickup           INTEGER NOT NULL DEFAULT 0,
+  home_drop             INTEGER NOT NULL DEFAULT 0,
+  home_radius_km        INTEGER NOT NULL DEFAULT 0,
   status                TEXT NOT NULL DEFAULT 'scheduled' CHECK (status IN ('scheduled', 'cancelled', 'completed')),
   created_at            TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
@@ -73,6 +78,13 @@ CREATE TABLE IF NOT EXISTS bookings (
   driver_fee      INTEGER NOT NULL DEFAULT 0,
   passenger_fee   INTEGER NOT NULL DEFAULT 0,
   confirmed_at    TEXT,
+  board_stop      INTEGER,
+  alight_stop     INTEGER,
+  segment_km      INTEGER,
+  home_pickup     TEXT,
+  home_drop       TEXT,
+  home_charge     INTEGER NOT NULL DEFAULT 0,
+  commission_discount_pct INTEGER NOT NULL DEFAULT 0,
   created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 CREATE INDEX IF NOT EXISTS bookings_ride ON bookings (ride_id);
@@ -168,6 +180,25 @@ CREATE TABLE IF NOT EXISTS phone_codes (
   sent_count    INTEGER NOT NULL DEFAULT 1
 );
 
+-- Popular pickup and drop-off points (seeded from places-data.js, editable by admins).
+CREATE TABLE IF NOT EXISTS places (
+  id       INTEGER PRIMARY KEY AUTOINCREMENT,
+  city     TEXT NOT NULL,
+  name     TEXT NOT NULL,
+  lat      REAL NOT NULL,
+  lon      REAL NOT NULL,
+  active   INTEGER NOT NULL DEFAULT 1,
+  UNIQUE (city, name)
+);
+
+-- Road distances between city centres from a map routing service.
+CREATE TABLE IF NOT EXISTS route_distances (
+  pair        TEXT PRIMARY KEY,
+  km          INTEGER NOT NULL,
+  source      TEXT NOT NULL,
+  updated_at  TEXT NOT NULL
+);
+
 -- Admin-controlled policy (fees, booking mode, onboarding requirements).
 CREATE TABLE IF NOT EXISTS settings (
   key    TEXT PRIMARY KEY,
@@ -233,11 +264,23 @@ const ADDED_COLUMNS = {
     driver_fee: 'INTEGER NOT NULL DEFAULT 0',
     passenger_fee: 'INTEGER NOT NULL DEFAULT 0',
     confirmed_at: 'TEXT',
+    board_stop: 'INTEGER',
+    alight_stop: 'INTEGER',
+    segment_km: 'INTEGER',
+    home_pickup: 'TEXT',
+    home_drop: 'TEXT',
+    home_charge: 'INTEGER NOT NULL DEFAULT 0',
+    commission_discount_pct: 'INTEGER NOT NULL DEFAULT 0',
   },
   rides: {
     payment_methods: `TEXT NOT NULL DEFAULT 'cash'`,
     payment_details: 'TEXT',
     duration_minutes: 'INTEGER',
+    stops: 'TEXT',
+    fare_per_km: 'INTEGER',
+    home_pickup: 'INTEGER NOT NULL DEFAULT 0',
+    home_drop: 'INTEGER NOT NULL DEFAULT 0',
+    home_radius_km: 'INTEGER NOT NULL DEFAULT 0',
   },
 };
 
@@ -250,6 +293,13 @@ function migrate(db) {
   }
 }
 
+// Loads the built-in popular places the first time.
+function seedPlaces(db) {
+  if (db.prepare('SELECT COUNT(*) n FROM places').get().n) return;
+  const insert = db.prepare('INSERT OR IGNORE INTO places (city, name, lat, lon) VALUES (?, ?, ?, ?)');
+  for (const p of require('./places-data')) insert.run(...p);
+}
+
 function openDb(file = process.env.DB_FILE || path.join(__dirname, '..', 'data', 'abc-rides.db')) {
   if (file !== ':memory:') fs.mkdirSync(path.dirname(file), { recursive: true });
   const db = new DatabaseSync(file);
@@ -257,6 +307,7 @@ function openDb(file = process.env.DB_FILE || path.join(__dirname, '..', 'data',
   db.exec(SCHEMA);
   migrate(db);
   db.exec(POST_MIGRATE);
+  seedPlaces(db);
   return db;
 }
 

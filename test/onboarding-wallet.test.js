@@ -17,6 +17,8 @@ const STRICT = {
   student_price_requires_verification: true,
   driver_commission_pct: 0,
   passenger_commission_pct: 0,
+  // Their fixed prices predate the per-km fare limits.
+  enforce_fare_limits: false,
 };
 
 before(async () => {
@@ -242,18 +244,21 @@ test('commission on confirmation, after the free confirmations run out', async (
     await topUp(p1, 200);
     const b2 = (await call('POST', `/rides/${r2.id}/bookings`, { token: p1.token, body: { seats: 2 } })).body;
 
-    // The driver owes 10% of Rs 4000 = Rs 400 and has nothing yet.
+    // The driver owes 10% of Rs 4000 = Rs 400, less 25% because the car now has
+    // 2 passengers: Rs 300. Their wallet is empty.
     const driverView = (await call('GET', `/rides/${r2.id}`, { token: driver.token })).body;
-    assert.equal(driverView.bookings[0].driver_fee_preview, 400);
+    assert.equal(driverView.bookings[0].driver_fee_preview, 300);
+    assert.equal(driverView.bookings[0].sharing_discount_pct, 25);
     res = await call('POST', `/bookings/${b2.id}/confirm`, { token: driver.token });
     assert.equal(res.status, 402);
     assert.match(res.body.error, /Your wallet balance/);
     await topUp(driver, 1000);
     res = await call('POST', `/bookings/${b2.id}/confirm`, { token: driver.token });
     assert.equal(res.body.status, 'confirmed');
-    assert.equal(res.body.driver_fee, 400);
+    assert.equal(res.body.driver_fee, 300);
+    assert.equal(res.body.commission_discount_pct, 25);
     assert.equal(res.body.passenger_fee, 200);
-    assert.equal(await balance(driver), 600);
+    assert.equal(await balance(driver), 700);
     assert.equal(await balance(p1), 0);
 
     // p2's free confirmation: no passenger fee, but the driver has none left (10% of 1000).
@@ -279,7 +284,7 @@ test('commission on confirmation, after the free confirmations run out', async (
     assert.equal((await call('GET', `/rides/${r5.id}`, { token: driver.token })).body.bookings[0].status, 'pending', 'nothing changed');
 
     const revenue = (await call('GET', '/admin/stats', { token: admin.token })).body;
-    assert.equal(revenue.revenue, 400 + 200 + 100 + 100 + 50, 'every commission and fee charged so far');
+    assert.equal(revenue.revenue, 300 + 200 + 100 + 100 + 50, 'every commission and fee charged so far');
     const ledger = (await call('GET', '/me/wallet', { token: driver.token })).body.transactions;
     assert.equal(ledger[0].type, 'commission');
   } finally {

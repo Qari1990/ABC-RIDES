@@ -14,6 +14,8 @@ const RELAXED = {
   student_price_requires_verification: false,
   driver_commission_pct: 0,
   passenger_commission_pct: 0,
+  // Their fixed prices predate the per-km fare limits.
+  enforce_fare_limits: false,
 };
 
 // Starts the app on a random port with an in-memory database.

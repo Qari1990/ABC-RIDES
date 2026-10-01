@@ -130,6 +130,19 @@ async function addPhotos(page, names) {
   await page.waitForFunction((list) => list.every((n) => !document.querySelector(`input[name=${n}]`).parentElement.querySelector('img').hidden), names);
 }
 
+// Fills the route part of the Offer form and waits for the road distance.
+async function chooseRoute(page, { from, to, pickup, drop }) {
+  await page.fill('#of', from);
+  await page.fill('#ot', to);
+  await page.waitForFunction(() => document.querySelector('#opp').value && document.querySelector('#odp').value);
+  if (pickup) await page.selectOption('#opp', { label: pickup });
+  if (drop) await page.selectOption('#odp', { label: drop });
+  await page.waitForFunction(() => /km by road/.test(document.querySelector('#route-info').textContent));
+}
+
+const rideRow = (id) => db.prepare('SELECT * FROM rides WHERE id = ?').get(id);
+const rs = (n) => `Rs ${Number(n).toLocaleString('en-PK')}`;
+
 const rideIdFromUrl = (page) => Number(page.url().match(/#\/ride\/(\d+)/)[1]);
 
 async function badgeCount(u) {
@@ -200,17 +213,18 @@ test('1b. onboarding: driver wizard, student card, admin approval', async () => 
 test('2. offer a ride: travel time is estimated and payment details saved', async () => {
   const { page, go } = users['Sana Driver'];
   await go('/offer', '#offer');
-  await page.fill('#of', 'Lahore');
-  await page.fill('#ot', 'Islamabad');
-  await page.waitForFunction(() => document.querySelector('[name=dur_h]').value !== '');
+  await chooseRoute(page, { from: 'Lahore', to: 'Islamabad', pickup: 'Thokar Niaz Baig', drop: 'Faizabad Interchange' });
   const hours = Number(await page.inputValue('[name=dur_h]'));
   assert.ok(hours >= 3 && hours <= 5, `estimated ${hours}h`);
-  assert.match(await page.textContent('#dur-hint'), /km by road/);
-  await page.fill('#op', 'Thokar Niaz Baig');
-  await page.fill('#od', 'Faizabad');
+  // Gujranwala is suggested as a stop on the way; the fare table shows the sharing discounts.
+  assert.match(await page.textContent('#route-info'), /Gujranwala/);
+  assert.match(await page.textContent('#earnings'), /25% off[\s\S]*50% off/);
+  assert.match(await page.textContent('#fare-info'), /bus about Rs/);
+  await page.fill('#ofk', '8');
   await page.fill('#ow', localDateTime(2, 8));
-  await page.fill('#opr', '2500');
   await page.fill('#osd', '20');
+  await page.check('[name=home_pickup]');
+  await page.fill('#ohr', '6');
   await page.fill('#ov', 'Honda City (silver)');
   await page.click('.days >> text=JazzCash');
   await page.fill('#opd', 'JazzCash 0300 1112233 (Sana)');
@@ -220,13 +234,19 @@ test('2. offer a ride: travel time is estimated and payment details saved', asyn
   users['Sana Driver'].rideId = rideIdFromUrl(page);
   assert.match(await page.textContent('#view'), /Cash, JazzCash/);
   assert.equal(await page.inputValue('#edit-ride [name=payment_details]'), 'JazzCash 0300 1112233 (Sana)');
+  const ride = rideRow(users['Sana Driver'].rideId);
+  assert.equal(ride.fare_per_km, 8);
+  assert.equal(ride.home_pickup, 1);
+  assert.equal(ride.home_radius_km, 6);
+  const km = JSON.parse(ride.stops).at(-1).km;
+  assert.equal(ride.price_per_seat, Math.round((km * 8) / 10) * 10, 'price = km × rate, rounded to Rs 10');
+  assert.match(await page.textContent('.stops'), /Thokar Niaz Baig[\s\S]*0 km[\s\S]*Faizabad Interchange/);
 });
 
 test('3. recurring commute: Mon + Fri for 2 weeks posts 4 rides', async () => {
   const { page, go } = users['Sana Driver'];
   await go('/offer', '#offer');
-  await page.fill('#of', 'Islamabad');
-  await page.fill('#ot', 'Rawalpindi');
+  await chooseRoute(page, { from: 'Islamabad', to: 'Rawalpindi' });
   await page.fill('#ow', localDateTime(1, 18));
   await page.fill('[name=dur_h]', '0');
   await page.fill('[name=dur_m]', '45');
@@ -243,8 +263,7 @@ test('3. recurring commute: Mon + Fri for 2 weeks posts 4 rides', async () => {
 test('4. women-only ride by a woman driver', async () => {
   const { page, go } = users['Sana Driver'];
   await go('/offer', '#offer');
-  await page.fill('#of', 'Lahore');
-  await page.fill('#ot', 'Faisalabad');
+  await chooseRoute(page, { from: 'Lahore', to: 'Faisalabad' });
   await page.fill('#ow', localDateTime(3, 9));
   await page.check('[name=women_only]');
   await page.check('[name=instant_book]');
@@ -270,7 +289,10 @@ test('5. search: student price, arrival time and time-of-day filter', async () =
   await page.click('#search [type=submit]');
   await page.waitForFunction(() => /^1 ride /.test(document.querySelector('#results h2')?.textContent || ''));
   const card = await page.textContent('#results a.card');
-  assert.match(card, /Rs 2,000/, 'student pays 20% less');
+  const full = rideRow(users['Sana Driver'].rideId).price_per_seat;
+  assert.match(card, new RegExp(rs(Math.round(full * 0.8))), 'student pays 20% less');
+  assert.match(card, /Rs [\d.]+\/km/);
+  assert.match(card, /Home pickup/);
   assert.match(card, /8:00 am → \d{1,2}:\d{2} (am|pm)/, 'arrival time shown');
   assert.match(card, /20% student discount/);
 });
@@ -337,11 +359,13 @@ test('9. driver edits the ride; passenger is notified', async () => {
   const sana = users['Sana Driver'];
   await sana.go(`/ride/${sana.rideId}`, 'summary:has-text("Edit ride details")');
   await sana.page.click('summary:has-text("Edit ride details")');
-  await sana.page.fill('#edit-ride [name=pickup_point]', 'Kalma Chowk');
+  // Rides with stops keep their route; drivers can still change the details.
+  assert.equal(await sana.page.locator('#edit-ride [name=pickup_point]').count(), 0);
+  await sana.page.fill('#edit-ride [name=notes]', 'I will wait at the Thokar petrol station.');
   await sana.page.fill('#edit-ride [name=dur_h]', '5');
   await sana.page.fill('#edit-ride [name=dur_m]', '0');
   await sana.page.click('#edit-ride [type=submit]');
-  await sana.page.waitForSelector('text=Kalma Chowk');
+  await sana.page.waitForSelector('text=I will wait at the Thokar petrol station.');
   assert.match(await sana.page.textContent('#view'), /Travel time\s*5h/);
   const ali = users['Ali Student'];
   await ali.go('/inbox', '#inbox-list .card');
@@ -388,6 +412,7 @@ test('11. ride request → matching ride → passenger alerted', async () => {
   await sana.page.click('text=Offer this ride');
   await sana.page.waitForSelector('#offer');
   assert.equal(await sana.page.inputValue('#of'), 'Multan');
+  await sana.page.waitForFunction(() => /km by road/.test(document.querySelector('#route-info').textContent));
   await sana.page.fill('#ow', `${date}T10:00`);
   await sana.page.click('#offer [type=submit]');
   await sana.page.waitForURL(/#\/ride\/\d+/);
@@ -534,18 +559,20 @@ test('16b. wallet: fees after free bookings, top-ups approved by admin, commissi
     const zara = users['Zara Traveller'];
     const admin = users.Admin;
     await sana.go('/offer', '#offer');
-    await sana.page.fill('#of', 'Lahore');
-    await sana.page.fill('#ot', 'Sialkot');
+    await chooseRoute(sana.page, { from: 'Lahore', to: 'Sialkot', pickup: 'Kalma Chowk', drop: 'City centre (Allama Iqbal Chowk)' });
     await sana.page.fill('#ow', localDateTime(5, 7));
-    await sana.page.fill('#opr', '1000');
     await sana.page.click('#offer [type=submit]');
     await sana.page.waitForURL(/#\/ride\/\d+/);
     const rideId = rideIdFromUrl(sana.page);
+    const fare = rideRow(rideId).price_per_seat * 2;
+    const passengerFee = Math.ceil((fare * 5) / 100);
+    // Two seats make two passengers: 25% off the driver's 10% commission.
+    const driverFee = Math.ceil((fare * 10 * 75) / 10000);
 
-    // 5% of Rs 2,000 for two seats = Rs 100, and Zara's wallet is empty.
+    // Zara's wallet is empty, so she is asked to top up.
     await zara.go(`/ride/${rideId}`, '#book');
     await zara.page.selectOption('#bseats', '2');
-    assert.match(await zara.page.textContent('#fee-box'), /Booking fee Rs 100 \(5%\)[\s\S]*Wallet: Rs 0[\s\S]*Top up/);
+    assert.match(await zara.page.textContent('#fee-box'), new RegExp(`Booking fee ${rs(passengerFee)} \\(5%\\)[\\s\\S]*Wallet: Rs 0[\\s\\S]*Top up`));
     await zara.page.click('#book [type=submit]');
     await zara.toast(/wallet balance \(Rs 0\) is too low/);
     await zara.page.waitForURL(/#\/wallet/);
@@ -568,9 +595,10 @@ test('16b. wallet: fees after free bookings, top-ups approved by admin, commissi
     await zara.page.click('#book [type=submit]');
     await zara.page.waitForSelector('text=Your booking');
 
-    // The driver owes 10% = Rs 200 and has an empty wallet.
+    // The driver's wallet is empty too.
     await sana.go(`/ride/${rideId}`, '[data-action=confirm]');
-    assert.match(await sana.page.textContent('[data-action=confirm]'), /Accept · fee Rs 200/);
+    assert.match(await sana.page.textContent('[data-action=confirm]'), new RegExp(`Accept · fee ${rs(driverFee)}`));
+    assert.match(await sana.page.textContent('#view'), /25% commission discount for sharing your car/);
     await sana.page.click('[data-action=confirm]');
     await sana.toast(/Your wallet balance \(Rs 0\) is too low/);
     await sana.page.waitForURL(/#\/wallet/);
@@ -586,17 +614,64 @@ test('16b. wallet: fees after free bookings, top-ups approved by admin, commissi
     await sana.page.click('[data-action=confirm]');
     await sana.page.waitForSelector('.badge.confirmed');
     await sana.go('/wallet', '.balance');
-    assert.equal(await sana.page.textContent('.balance'), 'Rs 300');
-    assert.match(await sana.page.textContent('#view'), /Driver commission[\s\S]*10% commission on Rs 2000[\s\S]*−Rs 200/);
+    assert.equal(await sana.page.textContent('.balance'), rs(500 - driverFee));
+    assert.match(await sana.page.textContent('#view'), new RegExp(`10% commission \\(25% sharing discount\\) on Rs ${fare}[\\s\\S]*−${rs(driverFee)}`));
     await zara.go('/wallet', '.balance');
-    assert.equal(await zara.page.textContent('.balance'), 'Rs 400');
-    await zara.go(`/ride/${rideId}`, 'text=Booking fee paid: Rs 100');
+    assert.equal(await zara.page.textContent('.balance'), rs(500 - passengerFee));
+    await zara.go(`/ride/${rideId}`, `text=Booking fee paid: ${rs(passengerFee)}`);
 
     await admin.go('/admin', '.stats');
-    assert.match(await admin.page.textContent('.stats'), /Rs 300\s*Revenue \(all time\)/);
+    assert.match(await admin.page.textContent('.stats'), new RegExp(`${rs(driverFee + passengerFee)}\\s*Revenue \\(all time\\)`));
   } finally {
     setSettings(db, before);
   }
+});
+
+test('16d. stops on the way and home drop-off: pay for your part of the route', async () => {
+  const sana = users['Sana Driver'];
+  const omar = users['Omar Passenger'];
+  await sana.go('/offer', '#offer');
+  await chooseRoute(sana.page, { from: 'Lahore', to: 'Sialkot', pickup: 'Kalma Chowk', drop: 'City centre (Allama Iqbal Chowk)' });
+  await sana.page.click('#route-info label:has-text("Gujranwala · City centre")');
+  await sana.page.waitForFunction(() => /with 1 stop/.test(document.querySelector('#route-info').textContent));
+  await sana.page.check('[name=home_drop]');
+  await sana.page.fill('#ow', localDateTime(6, 8));
+  await sana.page.click('#offer [type=submit]');
+  await sana.page.waitForURL(/#\/ride\/\d+/);
+  const rideId = rideIdFromUrl(sana.page);
+  const stops = JSON.parse(rideRow(rideId).stops);
+  assert.deepEqual(stops.map((x) => x.city), ['Lahore', 'Gujranwala', 'Sialkot']);
+  const segPrice = Math.round(((stops[2].km - stops[1].km) * rideRow(rideId).fare_per_km) / 10) * 10;
+
+  // Omar (logged out since his suspension in test 14) logs back in.
+  await omar.go('/login', '#login');
+  await omar.page.fill('#le', 'omar@e2e.pk');
+  await omar.page.fill('#lp', 'password123');
+  await omar.page.click('#login [type=submit]');
+  await omar.page.waitForSelector('.hero');
+
+  // In Gujranwala, he finds the Lahore ride and pays only from Gujranwala.
+  await omar.go('/search?from=Gujranwala&to=Sialkot&seats=1', '#results a.card');
+  const card = omar.page.locator('#results a.card', { hasText: 'Lahore' });
+  assert.match(await card.textContent(), new RegExp(`City centre \\(Sheranwala Bagh\\), Gujranwala → City centre \\(Allama Iqbal Chowk\\), Sialkot[\\s\\S]*${rs(segPrice)}`));
+  await card.click();
+  await omar.page.waitForSelector('#book');
+  assert.equal(await omar.page.inputValue('#bboard'), '1');
+  assert.match(await omar.page.textContent('.stops'), /you get on/);
+  await omar.page.check('[name=want_drop]');
+  await omar.page.fill('[name=drop_address]', 'House 5, Kashmir Road');
+  await omar.page.fill('[name=drop_loc]', `https://maps.google.com/?q=${stops[2].lat + 0.01},${stops[2].lon}`);
+  await omar.page.waitForFunction(() => /\+Rs 150/.test(document.querySelector('.home-note').textContent));
+  assert.match(await omar.page.textContent('#fee-box'), new RegExp(`You pay the driver ${rs(segPrice + 150)}[\\s\\S]*incl. Rs 150 home`));
+  await omar.page.click('#book [type=submit]');
+  await omar.page.waitForSelector('text=Your booking');
+  assert.match(await omar.page.textContent('#view'), new RegExp(`Home drop: House 5, Kashmir Road[\\s\\S]*${rs(segPrice + 150)} to pay the driver`));
+
+  await sana.go(`/ride/${rideId}`, '[data-action=confirm]');
+  const row = await sana.page.textContent('#view');
+  assert.match(row, /Sheranwala Bagh\), Gujranwala → City centre \(Allama Iqbal Chowk\), Sialkot/);
+  assert.match(row, /Drop at: House 5, Kashmir Road[\s\S]*map[\s\S]*\+Rs 150/);
+  assert.equal(await sana.page.locator('a:has-text("map")').getAttribute('href'), `https://maps.google.com/?q=${stops[2].lat + 0.01},${stops[2].lon}`);
 });
 
 test('16c. admin settings: booking mode and fees from the admin panel', async () => {

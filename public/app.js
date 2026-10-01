@@ -61,6 +61,19 @@ const TYPE_LABEL = { professional: 'Working professional', student: 'Student', t
 const DOC_LABEL = { cnic: 'CNIC', student_card: 'Student card', employee_card: 'Employee card', driving_license: 'Driving licence' };
 const PAY_LABEL = { cash: '💵 Cash', jazzcash: 'JazzCash', easypaisa: 'Easypaisa', bank_transfer: '🏦 Bank transfer' };
 const isPast = (iso) => new Date(iso) <= new Date();
+const roundFare = (n) => Math.max(10, Math.round(n / 10) * 10);
+function haversineKm(lat1, lon1, lat2, lon2) {
+  const rad = (d) => (d * Math.PI) / 180;
+  const h = Math.sin(rad(lat2 - lat1) / 2) ** 2 + Math.cos(rad(lat1)) * Math.cos(rad(lat2)) * Math.sin(rad(lon2 - lon1) / 2) ** 2;
+  return 2 * 6371 * Math.asin(Math.sqrt(h));
+}
+// "31.52, 74.35", or a Google Maps link containing @31.52,74.35 or q=31.52,74.35.
+function parseLocation(text) {
+  const m = String(text || '').match(/(-?\d{1,2}\.\d+)\s*,\s*(-?\d{1,3}\.\d+)/);
+  return m ? { lat: Number(m[1]), lon: Number(m[2]) } : null;
+}
+const mapLink = (lat, lon) => `https://maps.google.com/?q=${lat},${lon}`;
+const segmentQuery = (seg) => (seg ? `?board=${seg.board}&alight=${seg.alight}` : '');
 const rideUrl = (id) => `${location.origin}/#/ride/${id}`;
 
 function toast(msg, isError = false) {
@@ -201,15 +214,19 @@ const reliabilityText = (u) => (u.reliability != null ? ` · <span title="Drops 
 function rideCard(r) {
   const showStudent = r.student_discount_pct > 0;
   return `
-  <a class="card" href="#/ride/${r.id}">
+  <a class="card" href="#/ride/${r.id}${segmentQuery(r.segment)}">
     <div class="ride-top">
       <div>
         <div class="route">${esc(r.from_city)} <span class="arrow">→</span> ${esc(r.to_city)}</div>
-        <div class="meta"><span>🕒 ${schedule(r)}</span><span>💺 ${r.seats_left} left</span>${r.pickup_point ? `<span>📍 ${esc(r.pickup_point)}</span>` : ''}</div>
+        <div class="meta"><span>🕒 ${schedule(r)}</span><span>💺 ${r.seats_left} left</span>
+          ${r.segment ? `<span>📍 ${esc(r.segment.from)} → ${esc(r.segment.to)}${r.segment.km ? ` · ${r.segment.km} km` : ''}</span>`
+    : r.pickup_point ? `<span>📍 ${esc(r.pickup_point)}</span>` : ''}</div>
       </div>
-      <div class="price">${money(r.your_price ?? r.price_per_seat)}<small>per seat</small></div>
+      <div class="price">${money(r.your_price ?? r.price_per_seat)}<small>per seat${r.segment && r.segment.km ? ` · Rs ${(r.your_price / r.segment.km).toFixed(1)}/km` : ''}</small></div>
     </div>
     <div class="badges">
+      ${r.stops && r.stops.length > 2 ? `<span class="badge">🛑 ${r.stops.length - 2} stop(s) on the way</span>` : ''}
+      ${r.home_pickup || r.home_drop ? `<span class="badge">🏠 Home ${[r.home_pickup && 'pickup', r.home_drop && 'drop'].filter(Boolean).join(' & ')}</span>` : ''}
       <span class="badge">${esc(r.driver.name)}${r.driver.verified ? ' ✔' : ''}${r.driver.rating_avg ? ` · ★ ${r.driver.rating_avg}` : ''}</span>
       ${showStudent ? `<span class="badge student">🎓 ${r.student_discount_pct}% student discount</span>` : ''}
       ${r.women_only ? '<span class="badge women">♀ Women only</span>' : ''}
@@ -379,8 +396,15 @@ function sosPanel(r) {
     </div>`;
 }
 
-views.ride = async (page, _q, id) => {
-  const [r] = await Promise.all([api(`/rides/${id}`), refreshMe()]);
+views.ride = async (page, q, id) => {
+  const qs = new URLSearchParams(Object.entries({ board: q.board, alight: q.alight, from: q.from, to: q.to }).filter(([, v]) => v != null));
+  const [r] = await Promise.all([api(`/rides/${id}?${qs}`), refreshMe()]);
+  const stopsKnown = r.stops.every((st) => st.km != null);
+  const lastStop = r.stops.length - 1;
+  const stopName = (i) => {
+    const st = r.stops[i ?? 0];
+    return st ? esc(st.name.toLowerCase().includes(String(st.city).toLowerCase()) ? st.name : `${st.name}, ${st.city}`) : '';
+  };
   const isDriver = me && me.id === r.driver.id;
   const b = r.my_booking;
   const activeBooking = b && ['pending', 'confirmed'].includes(b.status);
@@ -393,9 +417,14 @@ views.ride = async (page, _q, id) => {
       <div class="list-row">
         <div>
           <b><a href="#/user/${x.passenger_id}">${esc(x.passenger_name)}</a></b>
-          <span class="muted small">· ${esc(TYPE_LABEL[x.passenger_type])} · ${x.passenger_reliability}% reliable · ${x.seats} seat(s) · ${money(x.price_per_seat * x.seats)}</span>
+          <span class="muted small">· ${esc(TYPE_LABEL[x.passenger_type])} · ${x.passenger_reliability}% reliable · ${x.seats} seat(s) · ${money(x.price_per_seat * x.seats + x.home_charge)}</span>
+          <div class="small">📍 ${stopName(x.board_stop)} → ${stopName(x.alight_stop ?? lastStop)}${x.segment_km ? ` · ${x.segment_km} km` : ''}</div>
+          ${x.home_pickup ? `<div class="small">🏠 Pick up from: ${esc(x.home_pickup.address)} (${x.home_pickup.km} km) · <a href="${mapLink(x.home_pickup.lat, x.home_pickup.lon)}" target="_blank" rel="noopener">map</a> · +${money(x.home_pickup.charge)}</div>` : ''}
+          ${x.home_drop ? `<div class="small">🏠 Drop at: ${esc(x.home_drop.address)} (${x.home_drop.km} km) · <a href="${mapLink(x.home_drop.lat, x.home_drop.lon)}" target="_blank" rel="noopener">map</a> · +${money(x.home_drop.charge)}</div>` : ''}
           ${x.message ? `<div class="small">“${esc(x.message)}”</div>` : ''}
           ${x.passenger_phone ? `<div class="small">📞 <a href="tel:${esc(x.passenger_phone)}">${esc(x.passenger_phone)}</a></div>` : ''}
+          ${x.status === 'pending' && x.sharing_discount_pct ? `<div class="small">🎉 ${x.sharing_discount_pct}% commission discount for sharing your car</div>` : ''}
+          ${x.status === 'confirmed' && x.commission_discount_pct ? `<div class="small muted">Commission ${money(x.driver_fee)} (${x.commission_discount_pct}% sharing discount)</div>` : ''}
         </div>
         <div class="actions">
           <span class="badge ${x.status}">${x.status}</span>
@@ -414,10 +443,11 @@ views.ride = async (page, _q, id) => {
       <details class="card">
         <summary><b>✏️ Edit ride details</b></summary>
         <form id="edit-ride" style="margin-top:12px">
+          ${stopsKnown ? '<p class="small muted">The route and stops stay fixed once posted, so passengers can rely on them.</p>' : `
           <div class="row two">
             <div class="field"><label>Pickup point</label><input name="pickup_point" value="${esc(r.pickup_point)}"></div>
             <div class="field"><label>Drop-off point</label><input name="dropoff_point" value="${esc(r.dropoff_point)}"></div>
-          </div>
+          </div>`}
           <div class="field"><label>Vehicle</label><input name="vehicle" value="${esc(r.vehicle)}"></div>
           ${durationFields(r.duration_minutes)}
           <div class="field"><label>Payment methods</label>${paymentCheckboxes(r.payment_methods)}</div>
@@ -435,7 +465,10 @@ views.ride = async (page, _q, id) => {
     bookingSection = `
       <div class="card">
         <h3>Your booking <span class="badge ${b.status}">${b.status}</span></h3>
-        <p>${b.seats} seat(s) · ${money(b.price_per_seat * b.seats)} to pay the driver</p>
+        <p>📍 ${stopName(b.board_stop)} → ${stopName(b.alight_stop ?? lastStop)}${b.segment_km ? ` · ${b.segment_km} km` : ''}</p>
+        ${b.home_pickup ? `<p class="small">🏠 Home pickup: ${esc(b.home_pickup.address)} (+${money(b.home_pickup.charge)})</p>` : ''}
+        ${b.home_drop ? `<p class="small">🏠 Home drop: ${esc(b.home_drop.address)} (+${money(b.home_drop.charge)})</p>` : ''}
+        <p>${b.seats} seat(s) · <b>${money(b.price_per_seat * b.seats + b.home_charge)}</b> to pay the driver</p>
         ${b.status === 'pending' ? '<p class="muted small">The driver will accept or decline your request soon. You’ll get a notification.</p>' : ''}
         ${r.driver.phone ? `<p>📞 Driver: <a href="tel:${esc(r.driver.phone)}">${esc(r.driver.phone)}</a></p>` : ''}
         ${r.payment_details ? `<p>💳 Pay to: <b>${esc(r.payment_details)}</b></p>` : ''}
@@ -450,10 +483,28 @@ views.ride = async (page, _q, id) => {
     bookingSection = `
       <form id="book" class="card">
         <h3>Book seats</h3>
+        ${r.stops.length > 2 ? `
+        <div class="row two">
+          <div class="field"><label for="bboard">Get on at</label><select id="bboard" name="board_stop">${r.stops.slice(0, -1).map((st, i) => `<option value="${i}" ${i === r.segment.board ? 'selected' : ''}>${esc(st.name)}, ${esc(st.city)}</option>`).join('')}</select></div>
+          <div class="field"><label for="balight">Get off at</label><select id="balight" name="alight_stop">${r.stops.map((st, i) => (i ? `<option value="${i}" ${i === r.segment.alight ? 'selected' : ''}>${esc(st.name)}, ${esc(st.city)}</option>` : '')).join('')}</select></div>
+        </div>` : ''}
         <div class="row two">
           <div class="field"><label for="bseats">Seats</label><select id="bseats" name="seats">${Array.from({ length: Math.min(r.seats_left, 4) }, (_, i) => `<option>${i + 1}</option>`).join('')}</select></div>
-          <div class="field"><label>Price per seat</label><input value="${money(r.your_price)}" disabled></div>
+          <div class="field"><label>Price per seat</label><input id="seat-price" value="${money(r.your_price)}" disabled></div>
         </div>
+        ${['pickup', 'drop'].filter((k) => r[`home_${k}`]).map((k) => `
+        <div class="home-opt">
+          <label class="check"><input type="checkbox" name="want_${k}" value="1"><span>🏠 ${k === 'pickup' ? 'Pick me up from home' : 'Drop me at home'}
+            <span class="muted small" style="display:block">Within ${r.home_radius_km} km of the ${k === 'pickup' ? 'pickup' : 'drop-off'} point · ${money(settings.home_pickup_per_km)}/km, min ${money(settings.home_pickup_min)}</span></span></label>
+          <div class="home-fields" data-kind="${k}" hidden>
+            <div class="field"><input name="${k}_address" placeholder="House/street and a landmark"></div>
+            <div class="actions">
+              ${k === 'pickup' ? '<button class="btn small ghost" type="button" data-action="locate">📍 Use my current location</button>' : ''}
+              <input name="${k}_loc" placeholder="${k === 'pickup' ? 'or paste' : 'Paste'} a Google Maps link or coordinates" style="flex:1;min-width:200px">
+            </div>
+            <p class="small muted home-note"></p>
+          </div>
+        </div>`).join('')}
         <div class="field"><label for="bmsg">Message to driver (optional)</label><textarea id="bmsg" name="message" maxlength="300" placeholder="e.g. I’ll have one small bag. Can you pick me up near Kalma Chowk?"></textarea></div>
         <div class="fee-box" id="fee-box"></div>
         <button class="btn block" type="submit">${r.instant_book ? 'Book now' : 'Request to book'}</button>
@@ -493,8 +544,17 @@ views.ride = async (page, _q, id) => {
       ${r.arrival_at ? `
       <div class="list-row"><span class="muted">Arrival (approx.)</span><span>${when(r.arrival_at)}</span></div>
       <div class="list-row"><span class="muted">Travel time</span><span>${duration(r.duration_minutes)}</span></div>` : ''}
+      ${stopsKnown ? `
+      <div class="stops">${r.stops.map((st, i) => {
+    const at = r.duration_minutes && r.stops[lastStop].km ? new Date(new Date(r.departure_at).getTime() + (r.duration_minutes * 60000 * st.km) / r.stops[lastStop].km) : null;
+    const on = i >= r.segment.board && i <= r.segment.alight;
+    return `<div class="stop ${on ? 'on' : ''}"><span class="dot"></span><div><b>${esc(st.name)}</b>, ${esc(st.city)}
+          <div class="muted small">${st.km} km${at ? ` · ~${clock(at.toISOString())}` : ''}${i === r.segment.board && r.segment.board ? ' · you get on' : ''}${i === r.segment.alight && r.segment.alight < lastStop ? ' · you get off' : ''}</div></div></div>`;
+  }).join('')}</div>
+      <p class="small muted">Rs ${r.fare_per_km}/km per seat · bus ≈ Rs ${settings.ref_bus_per_km}/km · private car ≈ Rs ${settings.ref_private_car_per_km}/km for the whole car.</p>
+      ${r.home_pickup || r.home_drop ? `<p class="small">🏠 Home ${[r.home_pickup && 'pickup', r.home_drop && 'drop-off'].filter(Boolean).join(' & ')} within ${r.home_radius_km} km.</p>` : ''}` : `
       <div class="list-row"><span class="muted">Pickup</span><span>${esc(r.pickup_point || 'Ask the driver')}</span></div>
-      <div class="list-row"><span class="muted">Drop-off</span><span>${esc(r.dropoff_point || 'Ask the driver')}</span></div>
+      <div class="list-row"><span class="muted">Drop-off</span><span>${esc(r.dropoff_point || 'Ask the driver')}</span></div>`}
       ${r.vehicle ? `<div class="list-row"><span class="muted">Vehicle</span><span>${esc(r.vehicle)}</span></div>` : ''}
       <div class="list-row"><span class="muted">Payment</span><span>${r.payment_methods.map((m) => PAY_LABEL[m]).join(', ')}</span></div>
       ${r.notes ? `<div class="list-row"><span class="muted">Notes</span><span>${esc(r.notes)}</span></div>` : ''}
@@ -515,13 +575,43 @@ views.ride = async (page, _q, id) => {
     ${reviewSection}`;
 
   const book = $('#book', page);
-  // The booking fee depends on the seats chosen; show it before the passenger commits.
+  const studentOk = me && me.traveler_type === 'student' && (!settings.student_price_requires_verification || me.student_verified);
+  // Mirrors the server: whole route at the posted price, parts of it by km.
+  const seatPrice = (bIdx, aIdx) => {
+    const base = !stopsKnown || (bIdx === 0 && aIdx === lastStop) ? r.price_per_seat : roundFare((r.stops[aIdx].km - r.stops[bIdx].km) * r.fare_per_km);
+    return studentOk ? Math.round((base * (100 - r.student_discount_pct)) / 100) : base;
+  };
+  const segmentNow = () => ({
+    board: book && book.board_stop ? Number(book.board_stop.value) : r.segment.board,
+    alight: book && book.alight_stop ? Number(book.alight_stop.value) : r.segment.alight,
+  });
+  // Home pickup/drop: location from the phone or a pasted link, charge by distance from the stop.
+  const homeChoice = (kind) => {
+    if (!book || !book[`want_${kind}`] || !book[`want_${kind}`].checked) return null;
+    const seg = segmentNow();
+    const stop = r.stops[kind === 'pickup' ? seg.board : seg.alight];
+    const loc = parseLocation(book[`${kind}_loc`].value);
+    const note = book.querySelector(`.home-fields[data-kind=${kind}] .home-note`);
+    if (!loc) { note.textContent = 'Add your location to see the charge.'; return { error: `Add your ${kind === 'pickup' ? 'pickup' : 'drop-off'} location` }; }
+    const km = Math.round(haversineKm(stop.lat, stop.lon, loc.lat, loc.lon) * 1.3 * 10) / 10;
+    if (km > r.home_radius_km) { note.textContent = `That is ${km} km from ${stop.name}; this driver goes up to ${r.home_radius_km} km.`; return { error: note.textContent }; }
+    const charge = Math.max(settings.home_pickup_min, roundFare(km * settings.home_pickup_per_km));
+    note.innerHTML = `${km} km from ${esc(stop.name)} · <b>+${money(charge)}</b> (paid to the driver)`;
+    return { lat: loc.lat, lon: loc.lon, address: book[`${kind}_address`].value.trim(), charge };
+  };
+  // The booking fee depends on the seats and stops chosen; show it before the passenger commits.
   const showFee = () => {
     const f = r.booking_fee;
     if (!book || !f) return;
-    const fare = f.per_seat_fare * Number(book.seats.value);
+    const seg = segmentNow();
+    const price = seatPrice(seg.board, seg.alight);
+    $('#seat-price', page).value = money(price);
+    const fare = price * Number(book.seats.value);
+    const home = ['pickup', 'drop'].map(homeChoice).filter((h) => h && !h.error).reduce((sum, h) => sum + h.charge, 0);
     const fee = (f.free ? 0 : Math.ceil((fare * f.pct) / 100)) + f.low_reliability_fee;
-    const lines = [`You pay the driver <b>${money(fare)}</b> directly.`];
+    const segKm = stopsKnown ? r.stops[seg.alight].km - r.stops[seg.board].km : null;
+    const lines = [`You pay the driver <b>${money(fare + home)}</b> directly${home ? ` (incl. ${money(home)} home pickup/drop)` : ''}.`];
+    if (segKm) lines.push(`${segKm} km · Rs ${(price / segKm).toFixed(1)}/km per seat (bus ≈ Rs ${settings.ref_bus_per_km}/km).`);
     if (fee) {
       lines.push(`Booking fee <b>${money(fee)}</b>${f.free ? '' : ` (${f.pct}%)`}${f.low_reliability_fee ? `, incl. ${money(f.low_reliability_fee)} low-reliability fee` : ''}, taken from your wallet when the booking is confirmed.`);
       lines.push(`Wallet: ${money(me.wallet_balance)}${me.wallet_balance < fee ? ' · <a href="#/wallet">Top up</a>' : ''}`);
@@ -531,10 +621,31 @@ views.ride = async (page, _q, id) => {
     $('#fee-box', page).innerHTML = lines.map((l) => `<div class="small">${l}</div>`).join('');
   };
   if (book) {
-    book.seats.addEventListener('change', showFee);
+    book.addEventListener('change', showFee);
+    book.addEventListener('input', showFee);
+    book.querySelectorAll('[name^=want_]').forEach((cb) => cb.addEventListener('change', () => {
+      book.querySelector(`.home-fields[data-kind=${cb.name.slice(5)}]`).hidden = !cb.checked;
+    }));
     showFee();
+    onClick(book, async (action) => {
+      if (action !== 'locate') return;
+      const link = await currentLocationLink();
+      if (!link) throw new Error('Could not get your location. Paste a Google Maps link instead.');
+      book.pickup_loc.value = link;
+      showFee();
+    });
     onSubmit(book, async (d) => {
-      const res = await api(`/rides/${r.id}/bookings`, { method: 'POST', body: { seats: Number(d.seats), message: d.message } });
+      const seg = segmentNow();
+      if (seg.board >= seg.alight) throw new Error('Choose a drop-off stop after your pickup stop');
+      const homes = {};
+      for (const kind of ['pickup', 'drop']) {
+        const h = homeChoice(kind);
+        if (h && h.error) throw new Error(h.error);
+        if (h) homes[`home_${kind}`] = { lat: h.lat, lon: h.lon, address: h.address };
+      }
+      const res = await api(`/rides/${r.id}/bookings`, {
+        method: 'POST', body: { seats: Number(d.seats), message: d.message, board_stop: seg.board, alight_stop: seg.alight, ...homes },
+      });
       toast(res.status === 'confirmed' ? 'Booked! Your seat is confirmed.' : 'Request sent to the driver.');
       render();
     });
@@ -545,7 +656,7 @@ views.ride = async (page, _q, id) => {
       await api(`/rides/${r.id}`, {
         method: 'PATCH',
         body: {
-          pickup_point: d.pickup_point, dropoff_point: d.dropoff_point, vehicle: d.vehicle, notes: d.notes,
+          ...(stopsKnown ? {} : { pickup_point: d.pickup_point, dropoff_point: d.dropoff_point }), vehicle: d.vehicle, notes: d.notes,
           payment_methods: checkedValues(form, 'pay'), payment_details: d.payment_details, instant_book: !!d.instant_book,
           duration_minutes: durationValue(d),
         },
@@ -560,6 +671,7 @@ views.ride = async (page, _q, id) => {
     render();
   }));
   onClick(page, async (action, data) => {
+    if (action === 'locate') return; // handled by the booking form
     if (action === 'back') { history.length > 1 ? history.back() : (location.hash = '#/'); return; }
     if (action === 'share') {
       shareText(`I'm travelling ${r.from_city} → ${r.to_city} on ${when(r.departure_at)} with ${r.driver.name} via ABC Rides: ${rideUrl(r.id)}`);
@@ -622,61 +734,178 @@ views.offer = async (page, q) => {
       See <a href="#/requests">passengers looking for rides</a>.</p>
     ${postingFee ? `<div class="card warn">⚠️ Your reliability is ${me.reliability}% (below ${settings.reliability_threshold}%), so each ride you post costs ${money(postingFee)} from your wallet (balance ${money(me.wallet_balance)}). Complete trips without cancelling to earn points back.</div>`
     : '<p class="small">✅ Posting rides is free.</p>'}
-    <form id="offer" class="card">
-      ${cityOptions()}
-      <div class="row two">
-        <div class="field"><label for="of">From</label><input id="of" name="from_city" list="cities" value="${esc(q.from)}" required></div>
-        <div class="field"><label for="ot">To</label><input id="ot" name="to_city" list="cities" value="${esc(q.to)}" required></div>
+    <form id="offer">
+      <div class="card">
+        <h3><span class="step">1</span> Route</h3>
+        ${cityOptions()}
+        <div class="row two">
+          <div class="field"><label for="of">From city</label><input id="of" name="from_city" list="cities" value="${esc(q.from)}" required></div>
+          <div class="field"><label for="opp">Pickup point</label><select id="opp" name="pickup_place"><option value="">Choose a city first</option></select></div>
+        </div>
+        <div class="row two">
+          <div class="field"><label for="ot">To city</label><input id="ot" name="to_city" list="cities" value="${esc(q.to)}" required></div>
+          <div class="field"><label for="odp">Drop-off point</label><select id="odp" name="drop_place"><option value="">Choose a city first</option></select></div>
+        </div>
+        <div id="route-info" class="small muted">Choose the cities and points to see the distance and stops on the way.</div>
+        <div id="legacy-price" class="field" hidden>
+          <label for="opr">Price per seat (Rs)</label><input id="opr" name="price_per_seat" type="number" min="0" step="50">
+          <p class="muted small">This city has no listed pickup points yet, so set the price yourself.</p>
+        </div>
       </div>
-      <div class="row two">
-        <div class="field"><label for="op">Pickup point</label><input id="op" name="pickup_point" placeholder="e.g. Thokar Niaz Baig"></div>
-        <div class="field"><label for="od">Drop-off point</label><input id="od" name="dropoff_point" placeholder="e.g. Faizabad"></div>
+      <div class="card" id="fare-card">
+        <h3><span class="step">2</span> Fare</h3>
+        <div class="field"><label for="ofk">Fare per km per seat (Rs)</label>
+          <input id="ofk" name="fare_per_km" type="number" value="${settings.fare_per_km}" ${settings.enforce_fare_limits ? `min="${settings.fare_min_per_km}" max="${settings.fare_max_per_km}"` : 'min="1"'} required>
+          <p class="muted small">Suggested Rs ${settings.fare_per_km}/km${settings.enforce_fare_limits ? `, allowed Rs ${settings.fare_min_per_km}–${settings.fare_max_per_km}/km` : ''}. Passengers who join on the way pay for their kilometres only.</p>
+        </div>
+        <div id="fare-info"></div>
+        <div id="earnings"></div>
       </div>
-      <div class="row three">
-        <div class="field"><label for="ow">Departure</label><input id="ow" name="departure_at" type="datetime-local" value="${localInputValue(start)}" required></div>
-        <div class="field"><label for="os">Seats</label><input id="os" name="seats_total" type="number" min="1" max="${me.vehicle ? me.vehicle.seats : 8}" value="${Math.min(3, me.vehicle ? me.vehicle.seats : 3)}" required></div>
-        <div class="field"><label for="opr">Price per seat (Rs)</label><input id="opr" name="price_per_seat" type="number" min="0" step="50" value="2000" required></div>
+      <div class="card">
+        <h3><span class="step">3</span> Home pickup & drop <span class="muted small">(optional)</span></h3>
+        <label class="check"><input type="checkbox" name="home_pickup" value="1"> Pick passengers up from home near the pickup point</label>
+        <label class="check"><input type="checkbox" name="home_drop" value="1"> Drop passengers at home near the drop-off point</label>
+        <div class="field"><label for="ohr">Up to how far from the point (km)</label><input id="ohr" name="home_radius_km" type="number" min="1" max="${settings.home_max_radius_km}" value="${Math.min(5, settings.home_max_radius_km)}"></div>
+        <p class="small">💰 Passengers pay ${money(settings.home_pickup_per_km)}/km for this (at least ${money(settings.home_pickup_min)}), and <b>you keep all of it, commission-free</b>.</p>
       </div>
-      ${durationFields(null)}
-      <div class="row two">
-        <div class="field"><label for="ov">Vehicle</label><input id="ov" name="vehicle" placeholder="${me.vehicle ? esc(`${me.vehicle.make} ${me.vehicle.model} (${me.vehicle.color})`) : 'e.g. Toyota Corolla, white'}"></div>
-        <div class="field"><label for="osd">Student discount (%)</label><input id="osd" name="student_discount_pct" type="number" min="0" max="100" value="0"></div>
-      </div>
-      <div class="field"><label>Accepted payment</label>${paymentCheckboxes()}</div>
-      <div class="field"><label for="opd">Payment account <span class="muted">(shown only to confirmed passengers)</span></label>
-        <input id="opd" name="payment_details" placeholder="e.g. JazzCash 0300 1234567 (Ahmed Raza)"></div>
-      <fieldset>
-        <legend>Regular commute? Repeat this ride</legend>
-        <p class="muted small">Pick weekdays to post the same ride for several weeks — ideal for office commutes or weekly trips home.</p>
-        <div class="days field">${days.map((d, i) => `<label><input type="checkbox" name="day" value="${i}"><span>${d}</span></label>`).join('')}</div>
-        <div class="field"><label for="oweeks">For how many weeks</label><select id="oweeks" name="weeks">${[1, 2, 3, 4].map((n) => `<option>${n}</option>`).join('')}</select></div>
-      </fieldset>
-      <div class="field"><label for="on">Notes</label><textarea id="on" name="notes" maxlength="500" placeholder="Luggage space, AC, music, smoking rules, stops on the way…"></textarea></div>
-      ${settings.booking_mode === 'driver_choice' ? '<label class="check"><input type="checkbox" name="instant_book" value="1"> Instant booking (accept passengers automatically)</label>'
+      <div class="card">
+        <h3><span class="step">4</span> Trip details</h3>
+        <div class="row two">
+          <div class="field"><label for="ow">Departure</label><input id="ow" name="departure_at" type="datetime-local" value="${localInputValue(start)}" required></div>
+          <div class="field"><label for="os">Seats</label><input id="os" name="seats_total" type="number" min="1" max="${me.vehicle ? me.vehicle.seats : 8}" value="${Math.min(3, me.vehicle ? me.vehicle.seats : 3)}" required></div>
+        </div>
+        ${durationFields(null)}
+        <div class="row two">
+          <div class="field"><label for="ov">Vehicle</label><input id="ov" name="vehicle" placeholder="${me.vehicle ? esc(`${me.vehicle.make} ${me.vehicle.model} (${me.vehicle.color})`) : 'e.g. Toyota Corolla, white'}"></div>
+          <div class="field"><label for="osd">Student discount (%)</label><input id="osd" name="student_discount_pct" type="number" min="0" max="100" value="0"></div>
+        </div>
+        <div class="field"><label>Accepted payment</label>${paymentCheckboxes()}</div>
+        <div class="field"><label for="opd">Payment account <span class="muted">(shown only to confirmed passengers)</span></label>
+          <input id="opd" name="payment_details" placeholder="e.g. JazzCash 0300 1234567 (Ahmed Raza)"></div>
+        <fieldset>
+          <legend>Regular commute? Repeat this ride</legend>
+          <p class="muted small">Pick weekdays to post the same ride for several weeks — ideal for office commutes or weekly trips home.</p>
+          <div class="days field">${days.map((d, i) => `<label><input type="checkbox" name="day" value="${i}"><span>${d}</span></label>`).join('')}</div>
+          <div class="field"><label for="oweeks">For how many weeks</label><select id="oweeks" name="weeks">${[1, 2, 3, 4].map((n) => `<option>${n}</option>`).join('')}</select></div>
+        </fieldset>
+        <div class="field"><label for="on">Notes</label><textarea id="on" name="notes" maxlength="500" placeholder="Luggage space, AC, music, smoking rules…"></textarea></div>
+        ${settings.booking_mode === 'driver_choice' ? '<label class="check"><input type="checkbox" name="instant_book" value="1"> Instant booking (accept passengers automatically)</label>'
     : `<p class="muted small">${settings.booking_mode === 'instant' ? 'Bookings are confirmed instantly.' : 'You approve each booking request.'}</p>`}
-      ${me.gender === 'female' ? '<label class="check"><input type="checkbox" name="women_only" value="1"> Women-only ride</label>' : ''}
+        ${me.gender === 'female' ? '<label class="check"><input type="checkbox" name="women_only" value="1"> Women-only ride</label>' : ''}
+      </div>
       <button class="btn block" type="submit">Publish ride</button>
     </form>`;
 
   const form = $('#offer', page);
-  // Fill in the estimated travel time when both cities are known, unless the driver typed one.
+  let plan = null; // { stops: [...], distance_km, duration_minutes } for the chosen points
+  let suggested = [];
   let touched = false;
   form.dur_h.addEventListener('input', () => { touched = true; });
   form.dur_m.addEventListener('input', () => { touched = true; });
-  const estimate = async () => {
-    if (touched || !form.from_city.value || !form.to_city.value) return;
-    const est = await api(`/route-estimate?${new URLSearchParams({ from: form.from_city.value, to: form.to_city.value })}`).catch(() => null);
-    $('#dur-hint', page).textContent = est ? `Estimated ≈ ${est.distance_km} km by road. Adjust if needed.` : 'Enter how long the trip usually takes.';
-    if (est) {
-      form.dur_h.value = Math.floor(est.duration_minutes / 60);
-      form.dur_m.value = est.duration_minutes % 60;
-    }
+
+  const fillPoints = async (cityInput, select, legacyKey) => {
+    const list = cityInput.value.trim() ? await api(`/places?city=${encodeURIComponent(cityInput.value.trim())}`).catch(() => []) : [];
+    select.innerHTML = list.length
+      ? list.map((p) => `<option value="${p.id}">${esc(p.name)}</option>`).join('')
+      : `<option value="">${cityInput.value.trim() ? 'No listed points' : 'Choose a city first'}</option>`;
+    select.dataset[legacyKey] = list.length ? '' : '1';
   };
-  let timer;
-  const later = () => { clearTimeout(timer); timer = setTimeout(estimate, 400); };
-  form.from_city.addEventListener('input', later);
-  form.to_city.addEventListener('input', later);
-  estimate();
+
+  const chosenStopIds = () => [
+    form.pickup_place.value,
+    ...checkedValues(form, 'via').sort((a, b) => Number(form.querySelector(`[name=via][value="${a}"]`).dataset.km) - Number(form.querySelector(`[name=via][value="${b}"]`).dataset.km)),
+    form.drop_place.value,
+  ];
+
+  // Distances for the chosen points; endpointsChanged refreshes the suggested stops.
+  const replan = async (endpointsChanged) => {
+    const noPoints = !form.pickup_place.value || !form.drop_place.value;
+    $('#legacy-price', page).hidden = !noPoints || !form.from_city.value || !form.to_city.value;
+    form.price_per_seat.required = !$('#legacy-price', page).hidden;
+    if (noPoints) {
+      plan = null;
+      $('#route-info', page).textContent = 'Choose the cities and points to see the distance and stops on the way.';
+      updateFare();
+      return;
+    }
+    const ids = endpointsChanged ? [form.pickup_place.value, form.drop_place.value] : chosenStopIds();
+    try {
+      plan = await api(`/route-plan?stops=${ids.join(',')}`);
+    } catch (err) {
+      plan = null;
+      $('#route-info', page).textContent = err.message;
+      return;
+    }
+    if (endpointsChanged) suggested = plan.suggested_stops;
+    if (!touched) {
+      form.dur_h.value = Math.floor(plan.duration_minutes / 60);
+      form.dur_m.value = plan.duration_minutes % 60;
+    }
+    const checked = new Set(checkedValues(form, 'via'));
+    $('#route-info', page).innerHTML = `
+      <p>🛣️ About <b>${plan.distance_km} km</b> by road${plan.stops.length > 2 ? ` with ${plan.stops.length - 2} stop(s)` : ''}.</p>
+      ${suggested.length ? `<p class="small">Add stops on the way so more passengers can join (they pay for their part of the route):</p>
+      <div class="days">${suggested.map((p) => `<label><input type="checkbox" name="via" value="${p.id}" data-km="${p.km}" ${checked.has(String(p.id)) ? 'checked' : ''}><span>${esc(p.city)} · ${esc(p.name)}</span></label>`).join('')}</div>` : ''}`;
+    $('#route-info', page).querySelectorAll('[name=via]').forEach((cb) => cb.addEventListener('change', () => replan(false)));
+    updateFare();
+  };
+
+  // Seat price, comparison and what the driver earns with 1, 2, 3… passengers.
+  function updateFare() {
+    const rate = Number(form.fare_per_km.value) || 0;
+    const km = plan ? plan.distance_km : null;
+    if (!km) {
+      $('#fare-info', page).innerHTML = '';
+      $('#earnings', page).innerHTML = '';
+      return;
+    }
+    const price = roundFare(km * rate);
+    const seats = Math.max(1, Math.min(8, Number(form.seats_total.value) || 1));
+    const fuel = Math.round((km * settings.petrol_price) / settings.car_km_per_litre);
+    const commissionFor = (k) => {
+      const disc = k >= 3 ? settings.share_discount_3_pct : k === 2 ? settings.share_discount_2_pct : 0;
+      return Math.ceil((price * settings.driver_commission_pct * (100 - disc)) / 10000);
+    };
+    $('#fare-info', page).innerHTML = `
+      <p>Seat price for the whole route: <b>${money(price)}</b>.</p>
+      <p class="small muted">For comparison on this distance: bus about ${money(roundFare(km * settings.ref_bus_per_km))} per seat,
+        private car about ${money(roundFare(km * settings.ref_private_car_per_km))} for the whole car.</p>`;
+    let income = 0;
+    let commission = 0;
+    const rows = [];
+    for (let n = 1; n <= seats; n++) {
+      income += price;
+      commission += commissionFor(n);
+      rows.push(`<tr><td>${n}</td><td><b>${money(income - commission)}</b><br><span class="muted">of ${money(income)}</span></td>
+        <td>${money(commission)}${n >= 2 ? `<br><span class="badge confirmed">${n >= 3 ? settings.share_discount_3_pct : settings.share_discount_2_pct}% off</span>` : ''}</td>
+        <td>${Math.round(((income - commission) / fuel) * 100)}%</td></tr>`);
+    }
+    $('#earnings', page).innerHTML = `
+      <p class="small"><b>What you earn</b> (fuel for ${km} km ≈ ${money(fuel)} at ${money(settings.petrol_price)}/litre, ${settings.car_km_per_litre} km/litre):</p>
+      <div class="table-wrap"><table class="earn">
+        <tr><th>Riders</th><th>You keep</th><th>Commission</th><th>Fuel paid</th></tr>
+        ${rows.join('')}
+      </table></div>
+      <p class="small">🚗 The more seats you fill, the less commission you pay: ${settings.share_discount_2_pct}% off with 2 passengers, ${settings.share_discount_3_pct}% off with 3 or more,
+        plus +${settings.share_bonus_points} reliability point per extra passenger. Home pickup/drop charges are all yours.
+        ${me.free_confirmations_left ? `Your next ${me.free_confirmations_left} confirmed booking(s) are commission-free.` : ''}</p>`;
+  }
+
+  // One timer per field, so typing the destination does not cancel the origin lookup.
+  const timers = {};
+  const cityChanged = (input, select, key) => {
+    clearTimeout(timers[key]);
+    timers[key] = setTimeout(async () => { await fillPoints(input, select, key); replan(true); }, 400);
+  };
+  form.from_city.addEventListener('input', () => cityChanged(form.from_city, form.pickup_place, 'nofrom'));
+  form.to_city.addEventListener('input', () => cityChanged(form.to_city, form.drop_place, 'noto'));
+  form.pickup_place.addEventListener('change', () => replan(true));
+  form.drop_place.addEventListener('change', () => replan(true));
+  form.fare_per_km.addEventListener('input', updateFare);
+  form.seats_total.addEventListener('input', updateFare);
+  await Promise.all([fillPoints(form.from_city, form.pickup_place, 'nofrom'), fillPoints(form.to_city, form.drop_place, 'noto')]);
+  replan(true);
+
   onSubmit(form, async (d) => {
     const first = new Date(d.departure_at);
     const picked = checkedValues(form, 'day').map(Number);
@@ -690,15 +919,19 @@ views.offer = async (page, q) => {
       }
       if (!departures.length) throw new Error('No matching days in that range');
     }
+    const route = plan
+      ? { stops: chosenStopIds().map(Number), fare_per_km: Number(d.fare_per_km) }
+      : { from_city: d.from_city, to_city: d.to_city, price_per_seat: Number(d.price_per_seat) };
     const created = await api('/rides', {
       method: 'POST',
       body: {
-        from_city: d.from_city, to_city: d.to_city, pickup_point: d.pickup_point, dropoff_point: d.dropoff_point,
+        ...route,
         departures: departures.map((x) => x.toISOString()),
-        seats_total: Number(d.seats_total), price_per_seat: Number(d.price_per_seat),
+        seats_total: Number(d.seats_total),
         student_discount_pct: Number(d.student_discount_pct || 0), vehicle: d.vehicle, notes: d.notes,
         payment_methods: checkedValues(form, 'pay'), payment_details: d.payment_details,
         duration_minutes: durationValue(d),
+        home_pickup: !!d.home_pickup, home_drop: !!d.home_drop, home_radius_km: Number(d.home_radius_km),
         instant_book: !!d.instant_book, women_only: !!d.women_only,
       },
     });
@@ -778,13 +1011,14 @@ views.trips = async (page, q) => {
   if (tab === 'booked') {
     const rows = await api('/me/bookings');
     list.innerHTML = rows.map((b) => `
-      <a class="card" href="#/ride/${b.ride_id}">
+      <a class="card" href="#/ride/${b.ride_id}${b.alight_stop != null ? segmentQuery({ board: b.board_stop, alight: b.alight_stop }) : ''}">
         <div class="ride-top">
           <div>
             <div class="route">${esc(b.from_city)} <span class="arrow">→</span> ${esc(b.to_city)}</div>
-            <div class="meta"><span>🕒 ${when(b.departure_at)}</span><span>🚗 ${esc(b.driver_name)}</span><span>💺 ${b.seats}</span></div>
+            <div class="meta"><span>🕒 ${when(b.departure_at)}</span><span>🚗 ${esc(b.driver_name)}</span><span>💺 ${b.seats}</span>
+              <span>📍 ${esc(b.board_name)} → ${esc(b.alight_name)}</span>${b.home_charge ? '<span>🏠 home pickup/drop</span>' : ''}</div>
           </div>
-          <div class="price">${money(b.price_per_seat * b.seats)}<small>total</small></div>
+          <div class="price">${money(b.price_per_seat * b.seats + b.home_charge)}<small>total</small></div>
         </div>
         <div class="badges"><span class="badge ${b.ride_status === 'scheduled' ? b.status : b.ride_status}">${b.ride_status === 'scheduled' ? b.status : `ride ${b.ride_status}`}</span></div>
       </a>`).join('') || '<div class="card empty">No bookings yet. <a href="#/">Find a ride</a></div>';
@@ -1310,11 +1544,11 @@ views.user = async (page, _q, id) => {
 views.admin = async (page, q) => {
   if (!requireLogin()) return;
   if (me.role !== 'admin') { page.innerHTML = '<div class="card empty">Admins only.</div>'; return; }
-  const tab = ['verify', 'topups', 'reports', 'users', 'settings'].includes(q.tab) ? q.tab : 'overview';
+  const tab = ['verify', 'topups', 'reports', 'users', 'places', 'settings'].includes(q.tab) ? q.tab : 'overview';
   const tabLink = (t, label) => `<a class="btn small ${tab === t ? '' : 'ghost'}" href="#/admin?tab=${t}">${label}</a>`;
   page.innerHTML = `
     <h1>Admin</h1>
-    <div class="tabs wrap">${tabLink('overview', 'Overview')}${tabLink('verify', 'Verifications')}${tabLink('topups', 'Top-ups')}${tabLink('reports', 'Reports')}${tabLink('users', 'Users')}${tabLink('settings', 'Settings')}</div>
+    <div class="tabs wrap">${tabLink('overview', 'Overview')}${tabLink('verify', 'Verifications')}${tabLink('topups', 'Top-ups')}${tabLink('reports', 'Reports')}${tabLink('users', 'Users')}${tabLink('places', 'Places')}${tabLink('settings', 'Settings')}</div>
     <div id="admin-body"><p class="muted">Loading…</p></div>`;
   const body = $('#admin-body', page);
 
@@ -1405,12 +1639,77 @@ views.admin = async (page, q) => {
       toast(action === 'approve' ? 'Wallet credited' : 'Rejected');
       render();
     });
+  } else if (tab === 'places') {
+    const [places, distances] = await Promise.all([api('/places'), api('/admin/distances')]);
+    const byCity = {};
+    for (const p of places) (byCity[p.city] = byCity[p.city] || []).push(p);
+    body.innerHTML = `
+      <div class="card">
+        <h3>Road distances</h3>
+        <p class="small muted">${distances.length ? `${distances.length} city pairs from the map routing service (last updated ${timeAgo(distances[0].updated_at)}).`
+    : 'Using built-in estimates. Load real road distances between all cities from the map routing service (OpenStreetMap / OSRM).'}</p>
+        <button class="btn small" data-action="refresh-distances">🗺️ Update distances from maps</button>
+      </div>
+      <form id="add-place" class="card">
+        <h3>Add a pickup / drop-off point</h3>
+        <p class="small muted">In Google Maps, long-press the spot and copy the coordinates (e.g. 31.5040, 74.3310).</p>
+        <div class="row three">
+          <div class="field"><label>City</label><input name="city" list="cities" required></div>
+          <div class="field"><label>Name</label><input name="name" placeholder="e.g. Daewoo Terminal" required></div>
+          <div class="field"><label>Coordinates</label><input name="coords" placeholder="31.5040, 74.3310" required></div>
+        </div>
+        ${cityOptions()}
+        <button class="btn small" type="submit">Add point</button>
+      </form>
+      ${Object.entries(byCity).map(([city, list]) => `
+      <details class="card"><summary><b>${esc(city)}</b> <span class="muted small">${list.length} point(s)</span></summary>
+        ${list.map((p) => `
+        <form class="list-row place-row" data-id="${p.id}">
+          <input name="name" value="${esc(p.name)}" style="flex:2;min-width:160px">
+          <input name="coords" value="${p.lat}, ${p.lon}" style="flex:1;min-width:150px">
+          <span class="actions">
+            <a class="btn small ghost" href="${mapLink(p.lat, p.lon)}" target="_blank" rel="noopener">Map</a>
+            <button class="btn small" type="submit">Save</button>
+            <button class="btn small ghost" type="button" data-action="hide-place" data-id="${p.id}">Remove</button>
+          </span>
+        </form>`).join('')}
+      </details>`).join('')}`;
+    onSubmit($('#add-place', body), async (d) => {
+      const loc = parseLocation(d.coords);
+      if (!loc) throw new Error('Coordinates should look like 31.5040, 74.3310');
+      await api('/admin/places', { method: 'POST', body: { city: d.city, name: d.name, ...loc } });
+      toast('Point added');
+      render();
+    });
+    body.querySelectorAll('form.place-row').forEach((f) => onSubmit(f, async (d) => {
+      const loc = parseLocation(d.coords);
+      if (!loc) throw new Error('Coordinates should look like 31.5040, 74.3310');
+      await api(`/admin/places/${f.dataset.id}`, { method: 'PATCH', body: { name: d.name, ...loc } });
+      toast('Saved');
+    }));
+    onClick(body, async (action, data) => {
+      if (action === 'hide-place') {
+        if (!confirm('Remove this point? Existing rides keep it.')) return;
+        await api(`/admin/places/${data.id}`, { method: 'DELETE' });
+        toast('Removed');
+        render();
+      }
+      if (action === 'refresh-distances') {
+        const res = await api('/admin/distances/refresh', { method: 'POST' });
+        toast(`Updated ${res.updated} city distances from maps`);
+        render();
+      }
+    });
   } else if (tab === 'settings') {
     const { values, spec } = await api('/admin/settings');
     const MODE = { driver_choice: 'Driver decides (instant or approve)', manual: 'Driver must approve every booking', instant: 'Every booking is confirmed instantly' };
     const groups = [
       ['Booking acceptance', ['booking_mode']],
+      ['Fares per km', ['fare_per_km', 'fare_min_per_km', 'fare_max_per_km', 'enforce_fare_limits']],
       ['Fees', ['driver_commission_pct', 'passenger_commission_pct', 'free_confirmations', 'min_topup']],
+      ['Driver benefits for sharing', ['share_discount_2_pct', 'share_discount_3_pct', 'share_bonus_points']],
+      ['Home pickup & drop', ['home_pickup_per_km', 'home_pickup_min', 'home_max_radius_km']],
+      ['Calculator & comparisons', ['petrol_price', 'car_km_per_litre', 'ref_bus_per_km', 'ref_private_car_per_km']],
       ['Reliability points', ['reliability_threshold', 'low_reliability_fee', 'penalty_driver_cancel', 'penalty_passenger_cancel', 'late_cancel_hours', 'reward_completed']],
       ['Onboarding & security', ['require_phone_verification', 'require_id_for_booking', 'require_driver_approval', 'student_price_requires_verification']],
       ['Wallet top-up accounts', ['topup_accounts']],

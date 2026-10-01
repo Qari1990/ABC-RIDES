@@ -3,7 +3,7 @@
 // admin@example.com is an admin.
 const { openDb, transaction } = require('./db');
 const { hashPassword } = require('./auth');
-const { estimateRoute } = require('./cities');
+const { placeKm, minutesFor } = require('./geo');
 const { normalizePhone } = require('./sms');
 
 const db = openDb();
@@ -54,20 +54,31 @@ transaction(db, () => {
       .run(ids[email], ...v);
   }
 
+  // [driver, stops (city, place name), departure, seats, Rs/km, student %, women only, instant, home pickup/drop, vehicle, notes, payment, account]
   const rides = [
-    ['ahmed@example.com', 'Lahore', 'Islamabad', 'Thokar Niaz Baig', 'Faizabad', at(1, 7), 3, 2500, 20, 0, 1, 'Honda Civic (white)', 'Weekly office commute, AC car, no smoking.', 'cash,jazzcash', 'JazzCash 0300 1234567 (Ahmed Raza)'],
-    ['ahmed@example.com', 'Islamabad', 'Lahore', 'Faizabad', 'Thokar Niaz Baig', at(4, 18), 3, 2500, 20, 0, 1, 'Honda Civic (white)', 'Friday evening ride back home.', 'cash,jazzcash', 'JazzCash 0300 1234567 (Ahmed Raza)'],
-    ['sara@example.com', 'Islamabad', 'Peshawar', 'G-9 Markaz', 'Hayatabad', at(2, 9), 2, 1800, 10, 1, 0, 'Toyota Corolla', 'Women only. Light luggage please.', 'cash,easypaisa', 'Easypaisa 0345 1112222'],
-    ['bilal@example.com', 'Karachi', 'Hyderabad', 'Sohrab Goth', 'Qasimabad', at(1, 16), 4, 900, 25, 0, 0, 'Suzuki Cultus', null, 'cash', null],
-    ['bilal@example.com', 'Lahore', 'Faisalabad', 'Kalma Chowk', 'Clock Tower', at(3, 8, 30), 3, 1200, 15, 0, 1, 'Suzuki Cultus', 'Students welcome, extra discount!', 'cash', null],
+    ['ahmed@example.com', [['Lahore', 'Thokar Niaz Baig'], ['Islamabad', 'Faizabad Interchange']], at(1, 7), 3, 8, 20, 0, 1, 1, 'Honda Civic (White)', 'Weekly office commute, AC car, no smoking.', 'cash,jazzcash', 'JazzCash 0300 1234567 (Ahmed Raza)'],
+    ['ahmed@example.com', [['Islamabad', 'Faizabad Interchange'], ['Lahore', 'Thokar Niaz Baig']], at(4, 18), 3, 8, 20, 0, 1, 0, 'Honda Civic (White)', 'Friday evening ride back home.', 'cash,jazzcash', 'JazzCash 0300 1234567 (Ahmed Raza)'],
+    ['sara@example.com', [['Islamabad', 'G-9 Markaz (Karachi Company)'], ['Peshawar', 'Hayatabad']], at(2, 9), 2, 9, 10, 1, 0, 1, 'Toyota Corolla (Grey)', 'Women only. Light luggage please.', 'cash,easypaisa', 'Easypaisa 0345 1112222'],
+    ['bilal@example.com', [['Karachi', 'Sohrab Goth'], ['Hyderabad', 'Qasimabad']], at(1, 16), 4, 7, 25, 0, 0, 0, 'Suzuki Cultus (Red)', null, 'cash', null],
+    ['bilal@example.com', [['Lahore', 'Kalma Chowk'], ['Gujranwala', 'City centre (Sheranwala Bagh)'], ['Sialkot', 'City centre (Allama Iqbal Chowk)']], at(3, 8, 30), 3, 7, 15, 0, 1, 1, 'Suzuki Cultus (Red)', 'Students welcome, extra discount! Stopping in Gujranwala.', 'cash', null],
   ];
+  const place = db.prepare('SELECT * FROM places WHERE city = ? AND name = ?');
   const insert = db.prepare(`
     INSERT INTO rides (driver_id, from_city, to_city, pickup_point, dropoff_point, departure_at, seats_total,
-      price_per_seat, student_discount_pct, women_only, instant_book, vehicle, notes, payment_methods, payment_details,
-      duration_minutes)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
-  for (const [email, from, to, ...rest] of rides) {
-    insert.run(ids[email], from, to, ...rest, estimateRoute(from, to).duration_minutes);
+      price_per_seat, fare_per_km, student_discount_pct, women_only, instant_book, home_pickup, home_drop, home_radius_km,
+      vehicle, notes, payment_methods, payment_details, duration_minutes, stops)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+  for (const [email, route, when, seats, rate, student, women, instant, home, ...rest] of rides) {
+    const places = route.map(([city, name]) => place.get(city, name));
+    let km = 0;
+    const stops = places.map((p, i) => {
+      if (i) km += placeKm(db, places[i - 1], p);
+      return { place_id: p.id, city: p.city, name: p.name, lat: p.lat, lon: p.lon, km };
+    });
+    const first = stops[0];
+    const last = stops[stops.length - 1];
+    insert.run(ids[email], first.city, last.city, first.name, last.name, when, seats, Math.max(10, Math.round((km * rate) / 10) * 10),
+      rate, student, women, instant, home, home, home ? 5 : 0, ...rest, minutesFor(km), JSON.stringify(stops));
   }
 
   db.prepare(`

@@ -32,13 +32,25 @@ function freeConfirmationsLeft(db, settings, userId) {
 
 const lowReliability = (settings, user) => user.reliability < settings.reliability_threshold;
 
-// What a user pays when a booking with this fare is confirmed.
-function confirmationFee(db, settings, user, fare, role) {
+// Drivers who fill their car pay less commission: the booking that brings the
+// ride to 2 passengers gets one discount, to 3 or more a bigger one.
+function shareDiscount(db, settings, rideId, seats, excludeBookingId = 0) {
+  const prior = db.prepare(`SELECT COALESCE(SUM(seats), 0) n FROM bookings
+    WHERE ride_id = ? AND status = 'confirmed' AND id != ?`).get(rideId, excludeBookingId).n;
+  const after = prior + seats;
+  if (after >= 3) return settings.share_discount_3_pct;
+  if (after >= 2) return settings.share_discount_2_pct;
+  return 0;
+}
+
+// What a user pays when a booking with this fare is confirmed. The fare is
+// the seat price only: home pickup/drop charges go to the driver untouched.
+function confirmationFee(db, settings, user, fare, role, { discountPct = 0 } = {}) {
   const pct = role === 'driver' ? settings.driver_commission_pct : settings.passenger_commission_pct;
   const free = freeConfirmationsLeft(db, settings, user.id) > 0;
-  const commission = free ? 0 : Math.ceil((fare * pct) / 100);
+  const commission = free ? 0 : Math.ceil((fare * pct * (100 - discountPct)) / 10000);
   const penalty = lowReliability(settings, user) ? settings.low_reliability_fee : 0;
-  return { total: commission + penalty, commission, penalty, free, pct };
+  return { total: commission + penalty, commission, penalty, free, pct, discountPct };
 }
 
 // Fee to post one ride: free unless the driver's reliability is low.
@@ -58,7 +70,7 @@ function insufficient(who, needed, balance) {
 
 function describe(fee, label) {
   const parts = [];
-  if (fee.commission) parts.push(`${fee.pct}% ${label}`);
+  if (fee.commission) parts.push(`${fee.pct}% ${label}${fee.discountPct ? ` (${fee.discountPct}% sharing discount)` : ''}`);
   if (fee.penalty) parts.push('low-reliability fee');
   return parts.join(' + ');
 }
@@ -71,7 +83,8 @@ function confirmBooking(db, settings, booking, ride, actor) {
   const driver = users.find((u) => u.id === ride.driver_id);
   const passenger = users.find((u) => u.id === booking.passenger_id);
   const fare = booking.price_per_seat * booking.seats;
-  const dFee = confirmationFee(db, settings, driver, fare, 'driver');
+  const discountPct = shareDiscount(db, settings, ride.id, booking.seats, booking.id);
+  const dFee = confirmationFee(db, settings, driver, fare, 'driver', { discountPct });
   const pFee = confirmationFee(db, settings, passenger, fare, 'passenger');
   const shortOf = (role, user, fee) => {
     const err = insufficient(actor === role ? 'you' : role, fee.total, user.wallet_balance);
@@ -83,8 +96,8 @@ function confirmBooking(db, settings, booking, ride, actor) {
   const ref = { bookingId: booking.id, rideId: ride.id };
   if (dFee.total) applyTxn(db, driver.id, -dFee.total, 'commission', { ...ref, note: `${describe(dFee, 'commission')} on Rs ${fare}` });
   if (pFee.total) applyTxn(db, passenger.id, -pFee.total, 'fee', { ...ref, note: `${describe(pFee, 'booking fee')} on Rs ${fare}` });
-  db.prepare(`UPDATE bookings SET status = 'confirmed', confirmed_at = ?, driver_fee = ?, passenger_fee = ? WHERE id = ?`)
-    .run(new Date().toISOString(), dFee.total, pFee.total, booking.id);
+  db.prepare(`UPDATE bookings SET status = 'confirmed', confirmed_at = ?, driver_fee = ?, passenger_fee = ?,
+    commission_discount_pct = ? WHERE id = ?`).run(new Date().toISOString(), dFee.total, pFee.total, discountPct, booking.id);
   return { driverFee: dFee, passengerFee: pFee };
 }
 
@@ -99,6 +112,6 @@ function cancelPenalty(settings, ride, base) {
 }
 
 module.exports = {
-  applyTxn, confirmBooking, confirmationFee, postingFee, freeConfirmationsLeft, adjustReliability, cancelPenalty,
+  applyTxn, confirmBooking, confirmationFee, shareDiscount, postingFee, freeConfirmationsLeft, adjustReliability, cancelPenalty,
   insufficient, lowReliability,
 };

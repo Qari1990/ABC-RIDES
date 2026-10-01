@@ -1,7 +1,7 @@
 const express = require('express');
 const path = require('node:path');
 const { loadUser } = require('./auth');
-const { CITIES, estimateRoute } = require('./cities');
+const { CITIES, estimateRoute } = require('./geo');
 const usersRouter = require('./routes/users');
 const ridesRouter = require('./routes/rides');
 const requestsRouter = require('./routes/requests');
@@ -9,6 +9,7 @@ const messagesRouter = require('./routes/messages');
 const adminRouter = require('./routes/admin');
 const onboardingRouter = require('./routes/onboarding');
 const walletRouter = require('./routes/wallet');
+const placesRouter = require('./routes/places');
 const { securityHeaders } = require('./security');
 
 // Photo uploads parse their own, larger bodies.
@@ -28,10 +29,11 @@ function createApp(db, { uploadDir = process.env.UPLOAD_DIR || path.join(__dirna
   api.use(loadUser(db));
   api.get('/health', (_req, res) => res.json({ ok: true }));
   api.get('/cities', (_req, res) => res.json(CITIES));
-  api.get('/route-estimate', (req, res) => res.json(estimateRoute(req.query.from, req.query.to)));
+  api.get('/route-estimate', (req, res) => res.json(estimateRoute(db, req.query.from, req.query.to)));
   api.use(usersRouter(db));
   api.use(onboardingRouter(db, { uploadDir }));
   api.use(walletRouter(db));
+  api.use(placesRouter(db));
   api.use(ridesRouter(db));
   api.use(requestsRouter(db));
   api.use(messagesRouter(db));

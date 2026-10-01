@@ -1,0 +1,161 @@
+// Distances between cities and places.
+//
+// Road distances between city centres come from, in order of preference:
+//   1. the route_distances table, filled from a map routing service
+//      (OSRM) by the admin's "Update distances from maps" button;
+//   2. a built-in table of well-known routes (approximate);
+//   3. the straight-line distance stretched by a road factor.
+// Distances between two places scale the city-to-city road distance by how
+// far apart the places are compared with the city centres.
+
+const CITY_CENTRES = {
+  Abbottabad: [34.15, 73.22],
+  Bahawalpur: [29.40, 71.68],
+  Faisalabad: [31.42, 73.08],
+  Gujranwala: [32.16, 74.19],
+  Gujrat: [32.57, 74.08],
+  Hyderabad: [25.40, 68.37],
+  Islamabad: [33.68, 73.05],
+  Jhelum: [32.94, 73.73],
+  Karachi: [24.86, 67.01],
+  Lahore: [31.55, 74.34],
+  Mardan: [34.20, 72.04],
+  Multan: [30.20, 71.47],
+  Murree: [33.91, 73.39],
+  Peshawar: [34.01, 71.58],
+  Quetta: [30.18, 66.98],
+  'Rahim Yar Khan': [28.42, 70.30],
+  Rawalpindi: [33.60, 73.04],
+  Sahiwal: [30.66, 73.11],
+  Sargodha: [32.08, 72.67],
+  Sialkot: [32.49, 74.53],
+  Sukkur: [27.71, 68.86],
+};
+const CITIES = Object.keys(CITY_CENTRES);
+
+// Approximate road distances (km) of common routes, mostly by motorway.
+const KNOWN_ROAD_KM = {
+  'Islamabad|Lahore': 375,
+  'Lahore|Rawalpindi': 380,
+  'Faisalabad|Lahore': 185,
+  'Lahore|Multan': 340,
+  'Gujranwala|Lahore': 70,
+  'Lahore|Sialkot': 130,
+  'Lahore|Sahiwal': 170,
+  'Gujrat|Lahore': 120,
+  'Islamabad|Peshawar': 185,
+  'Peshawar|Rawalpindi': 175,
+  'Abbottabad|Islamabad': 120,
+  'Islamabad|Murree': 60,
+  'Islamabad|Jhelum': 120,
+  'Islamabad|Rawalpindi': 15,
+  'Hyderabad|Karachi': 165,
+  'Karachi|Sukkur': 470,
+  'Hyderabad|Sukkur': 320,
+  'Bahawalpur|Multan': 100,
+  'Faisalabad|Multan': 240,
+  'Multan|Sukkur': 400,
+  'Faisalabad|Islamabad': 300,
+};
+
+const ROAD_FACTOR = 1.3; // straight line → road, used when nothing better is known
+const AVG_KMH = 85;
+
+const pairKey = (a, b) => [a, b].sort().join('|');
+
+function canonicalCity(name) {
+  return CITIES.find((c) => c.toLowerCase() === String(name || '').trim().toLowerCase()) || null;
+}
+
+function haversineKm([lat1, lon1], [lat2, lon2]) {
+  const rad = (d) => (d * Math.PI) / 180;
+  const dLat = rad(lat2 - lat1);
+  const dLon = rad(lon2 - lon1);
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(rad(lat1)) * Math.cos(rad(lat2)) * Math.sin(dLon / 2) ** 2;
+  return 2 * 6371 * Math.asin(Math.sqrt(h));
+}
+
+// Road km between two city centres; db (optional) supplies map-based distances.
+function cityRoadKm(db, a, b) {
+  const ca = canonicalCity(a);
+  const cb = canonicalCity(b);
+  if (!ca || !cb) return null;
+  if (ca === cb) return 0;
+  const key = pairKey(ca, cb);
+  if (db) {
+    const row = db.prepare('SELECT km FROM route_distances WHERE pair = ?').get(key);
+    if (row) return row.km;
+  }
+  return KNOWN_ROAD_KM[key] ?? Math.round(haversineKm(CITY_CENTRES[ca], CITY_CENTRES[cb]) * ROAD_FACTOR);
+}
+
+// Road km between two places ({city, lat, lon}).
+function placeKm(db, p, q) {
+  const straight = haversineKm([p.lat, p.lon], [q.lat, q.lon]);
+  const cp = canonicalCity(p.city);
+  const cq = canonicalCity(q.city);
+  if (!cp || !cq || cp === cq) return Math.max(1, Math.round(straight * ROAD_FACTOR));
+  const centres = haversineKm(CITY_CENTRES[cp], CITY_CENTRES[cq]);
+  const scale = Math.min(1.3, Math.max(0.7, straight / centres));
+  return Math.round(cityRoadKm(db, cp, cq) * scale);
+}
+
+function minutesFor(km) {
+  return Math.max(30, Math.round((km / AVG_KMH) * 4) * 15);
+}
+
+function estimateRoute(db, from, to) {
+  const km = cityRoadKm(db, from, to);
+  if (!km) return null;
+  return { distance_km: km, duration_minutes: minutesFor(km) };
+}
+
+// Stops (places) the route passes near: places whose detour is small, ordered
+// along the way. Used to suggest intermediate stops to drivers.
+function suggestStops(db, start, end, places, { maxDetour = 1.1, limit = 6 } = {}) {
+  const direct = placeKm(db, start, end);
+  return places
+    .filter((p) => p.city !== start.city && p.city !== end.city)
+    .map((p) => {
+      const fromStart = placeKm(db, start, p);
+      const toEnd = placeKm(db, p, end);
+      return { ...p, km: fromStart, toEnd, detour: (fromStart + toEnd) / direct };
+    })
+    // Between the two ends, and not much of a detour; the closest few, in travel order.
+    .filter((p) => p.detour <= maxDetour && p.km < direct && p.toEnd < direct)
+    .sort((a, b) => a.detour - b.detour)
+    .slice(0, limit)
+    .sort((a, b) => a.km - b.km);
+}
+
+// Fills route_distances with real road distances between city centres from an
+// OSRM server (its "table" service returns the whole matrix in one request).
+async function refreshFromOsrm(db, baseUrl = process.env.ROUTING_URL || 'https://router.project-osrm.org') {
+  const coords = CITIES.map((c) => `${CITY_CENTRES[c][1]},${CITY_CENTRES[c][0]}`).join(';');
+  const res = await fetch(`${baseUrl.replace(/\/$/, '')}/table/v1/driving/${coords}?annotations=distance`, {
+    headers: { 'user-agent': 'ABC-Rides/1.0' },
+    signal: AbortSignal.timeout(30000),
+  });
+  if (!res.ok) throw new Error(`Routing service answered ${res.status}`);
+  const data = await res.json();
+  if (data.code !== 'Ok' || !Array.isArray(data.distances)) throw new Error('Routing service returned no distances');
+  const upsert = db.prepare(`INSERT INTO route_distances (pair, km, source, updated_at) VALUES (?, ?, 'osrm', ?)
+    ON CONFLICT(pair) DO UPDATE SET km = excluded.km, source = excluded.source, updated_at = excluded.updated_at`);
+  const now = new Date().toISOString();
+  let count = 0;
+  CITIES.forEach((a, i) => CITIES.forEach((b, j) => {
+    const metres = data.distances[i][j];
+    if (j > i && metres) {
+      // Average both directions where available (one-way systems differ slightly).
+      const back = data.distances[j][i] || metres;
+      upsert.run(pairKey(a, b), Math.round((metres + back) / 2000), now);
+      count += 1;
+    }
+  }));
+  return count;
+}
+
+module.exports = {
+  CITIES, CITY_CENTRES, canonicalCity, haversineKm, cityRoadKm, placeKm, minutesFor, estimateRoute, suggestStops,
+  refreshFromOsrm, ROAD_FACTOR,
+};

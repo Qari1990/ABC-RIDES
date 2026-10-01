@@ -6,6 +6,21 @@ Drivers who are already going between cities post their empty seats; passengers 
 ## Features
 
 - **Find a ride**: search by from/to city, date (optional), time of day (morning/afternoon/evening), seats needed and women-only.
+- **Popular pickup & drop-off points**: about 50 well-known points across 21 cities (Thokar Niaz Baig, Kalma
+  Chowk, Faizabad, Sohrab Goth…) with coordinates. Admins correct or add points by pasting coordinates from Google Maps.
+- **Map-based distances**: road distances between cities from built-in estimates, upgraded to real road distances
+  with **Admin → Places → Update distances from maps** (OpenStreetMap routing via OSRM).
+- **Fair per-km fares**: drivers set a rate per km per seat within admin limits (default suggested Rs 8/km, allowed
+  Rs 6–11). For reference, in October 2026 a Daewoo Luxury seat Lahore–Islamabad was about Rs 2,620–2,660 (~Rs 7/km)
+  and inDrive listed a private car from about Rs 5,840 (~Rs 15/km for the car). Passengers see the comparison.
+- **Stops on the way**: drivers add suggested stops along the route; passengers can join and leave at any stop and
+  pay only for their kilometres. Search finds rides passing through your cities, not just starting there.
+- **Home pickup & drop**: drivers can offer pickup from / drop at home within a radius of a stop; passengers share
+  their location (or paste a Google Maps link) and pay a per-km charge (default Rs 50/km, minimum Rs 150) that goes
+  entirely to the driver, commission-free.
+- **Driver benefits for sharing**: 25% less commission when the car reaches 2 passengers, 50% less from 3, extra
+  reliability points per extra passenger, and an earnings calculator showing what the driver keeps and how much of
+  the fuel is covered for 1, 2, 3… passengers.
 - **Ride time**: each ride shows departure, estimated arrival and travel time (e.g. "7:00 am → 11:15 am · 4h 15m"). The travel time is estimated from the cities and drivers can adjust it.
 - **Offer a ride**: route, pickup/drop-off points, departure time, seats, price per seat, vehicle and notes.
 - **Commuter mode**: repeat a ride on chosen weekdays for up to 4 weeks (e.g. Lahore → Islamabad every Monday, back every Friday).
@@ -77,6 +92,7 @@ Environment variables:
 | `SMS_GATEWAY_URL` | | SMS provider send URL with `{to}` and `{message}` placeholders. Unset = development mode: phone codes are shown on screen |
 | `SMS_GATEWAY_METHOD` | `GET` | HTTP method for the SMS URL |
 | `SIGNUP_LIMIT_PER_HOUR` | `100` | Sign-ups allowed per network address per hour |
+| `ROUTING_URL` | `https://router.project-osrm.org` | OSRM server used by "Update distances from maps" |
 
 Fees, booking mode and onboarding requirements are changed in the app under **Admin → Settings**.
 Default policy: phone verification required, drivers must be approved, student prices need a verified student
@@ -125,7 +141,10 @@ server/
   auth.js           password hashing, sessions, auth middleware
   errors.js         HttpError and input validators
   notify.js         in-app notification helper
-  settings.js       admin-controlled policy (fees, booking mode, requirements)
+  settings.js       admin-controlled policy (fees, fares, booking mode, requirements)
+  geo.js            cities, road distances, distances between places, suggested stops
+  places-data.js    built-in popular pickup/drop-off points
+  fares.js          per-km and per-segment fares, home pickup charges
   wallet.js         wallet ledger, booking fees, reliability points
   policy.js         onboarding checks (phone, identity, driver approval)
   security.js       security headers and rate limiting
@@ -134,6 +153,7 @@ server/
   routes/users.js   register, login, profile, notifications
   routes/onboarding.js phone codes, identity verification, driver registration
   routes/wallet.js  wallet, top-ups, public settings
+  routes/places.js  places, route plans, admin places and map distances
   routes/rides.js   rides, search, bookings, reviews
   routes/requests.js ride requests
   routes/messages.js chat and user reports
@@ -157,6 +177,10 @@ All endpoints are under `/api`. Send `Authorization: Bearer <token>` for the one
 | GET | `/users/:id` | Public profile, rating and reviews |
 | GET | `/cities` | Suggested cities |
 | GET | `/route-estimate?from=&to=` | Estimated road distance and travel time between two listed cities |
+| GET | `/places?city=` | Popular pickup/drop-off points |
+| GET | `/route-plan?stops=1,2,3` | Distance along chosen points, travel time, and suggested stops on the way |
+| POST / PATCH / DELETE | `/admin/places` 🛠 | Add, correct or remove points |
+| POST | `/admin/distances/refresh` 🛠 | Load road distances between all cities from the map routing service |
 | GET | `/rides?from=&to=&after=&before=&seats=&women_only=` | Search upcoming rides |
 | POST | `/rides` 🔒 | Offer a ride (`departure_at`, or `departures: [...]` for a series) |
 | GET | `/rides/:id` | Ride details (the driver also sees bookings) |
