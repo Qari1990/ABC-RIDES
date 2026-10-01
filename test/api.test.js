@@ -1,53 +1,14 @@
 const { test, before, after } = require('node:test');
 const assert = require('node:assert/strict');
-const { openDb } = require('../server/db');
-const { createApp } = require('../server/app');
+const { startServer, inHours, rideBody } = require('./helpers');
 
-let server, base, db;
+let db, call, register, close;
 
 before(async () => {
-  db = openDb(':memory:');
-  server = createApp(db).listen(0);
-  await new Promise((r) => server.once('listening', r));
-  base = `http://127.0.0.1:${server.address().port}/api`;
+  ({ db, call, register, close } = await startServer());
 });
 
-after(() => server.close());
-
-async function call(method, path, { token, body } = {}) {
-  const res = await fetch(base + path, {
-    method,
-    headers: {
-      ...(body ? { 'content-type': 'application/json' } : {}),
-      ...(token ? { authorization: `Bearer ${token}` } : {}),
-    },
-    body: body ? JSON.stringify(body) : undefined,
-  });
-  const text = await res.text();
-  return { status: res.status, body: text ? JSON.parse(text) : null };
-}
-
-let n = 0;
-async function register(overrides = {}) {
-  n += 1;
-  const { status, body } = await call('POST', '/auth/register', {
-    body: {
-      name: `User ${n}`, email: `user${n}@test.pk`, phone: '+92 300 0000000', password: 'secret123',
-      traveler_type: 'professional', gender: 'male', ...overrides,
-    },
-  });
-  assert.equal(status, 201, JSON.stringify(body));
-  return body;
-}
-
-const inHours = (h) => new Date(Date.now() + h * 36e5).toISOString();
-
-function rideBody(extra = {}) {
-  return {
-    from_city: 'Lahore', to_city: 'Islamabad', departure_at: inHours(24),
-    seats_total: 3, price_per_seat: 2000, student_discount_pct: 25, ...extra,
-  };
-}
+after(() => close());
 
 test('register, login and fetch profile', async () => {
   const { user } = await register({ email: 'Ali@Test.pk' });

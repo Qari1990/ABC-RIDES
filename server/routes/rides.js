@@ -2,9 +2,11 @@ const express = require('express');
 const { requireUser } = require('../auth');
 const { transaction } = require('../db');
 const { HttpError, bad, str, int, isoDate } = require('../errors');
+const { notify, route, when } = require('../notify');
 const { publicUser } = require('./users');
 
 const MAX_DEPARTURES = 30;
+const PAYMENT_METHODS = ['cash', 'jazzcash', 'easypaisa', 'bank_transfer'];
 const HELD = `status IN ('pending', 'confirmed')`;
 
 const RIDE_COLUMNS = `
@@ -19,10 +21,21 @@ function priceFor(ride, user) {
   return user && user.traveler_type === 'student' ? studentPrice(ride) : ride.price_per_seat;
 }
 
+function paymentMethods(value) {
+  const list = Array.isArray(value) ? value : ['cash'];
+  const bad_ = list.filter((m) => !PAYMENT_METHODS.includes(m));
+  if (!list.length || bad_.length) throw bad(`Payment methods must be from: ${PAYMENT_METHODS.join(', ')}`);
+  return [...new Set(list)].join(',');
+}
+
+// Payment account details are private; callers add them back for the driver
+// and confirmed passengers.
 function shapeRide(db, ride) {
   const driver = db.prepare('SELECT * FROM users WHERE id = ?').get(ride.driver_id);
+  const { payment_details: _hidden, ...rest } = ride;
   return {
-    ...ride,
+    ...rest,
+    payment_methods: ride.payment_methods.split(','),
     women_only: !!ride.women_only,
     instant_book: !!ride.instant_book,
     student_price: studentPrice(ride),
@@ -80,6 +93,7 @@ module.exports = function ridesRouter(db) {
     out.passengers = passengers.map((p) => ({ id: p.id, name: p.name }));
 
     if (me && me.id === ride.driver_id) {
+      out.payment_details = ride.payment_details;
       out.bookings = db.prepare(`
         SELECT b.*, u.name passenger_name, u.traveler_type passenger_type,
                CASE WHEN b.status = 'confirmed' THEN u.phone END AS passenger_phone
@@ -92,6 +106,7 @@ module.exports = function ridesRouter(db) {
       out.my_booking = mine || null;
       if (mine && mine.status === 'confirmed') {
         out.driver.phone = db.prepare('SELECT phone FROM users WHERE id = ?').get(ride.driver_id).phone;
+        out.payment_details = ride.payment_details;
       }
     }
 
@@ -138,13 +153,53 @@ module.exports = function ridesRouter(db) {
       b.instant_book ? 1 : 0,
       str(b.vehicle, 'Vehicle', { max: 80 }),
       str(b.notes, 'Notes', { max: 500 }),
+      paymentMethods(b.payment_methods),
+      str(b.payment_details, 'Payment details', { max: 200 }),
     ];
     const insert = db.prepare(`
       INSERT INTO rides (driver_id, from_city, to_city, pickup_point, dropoff_point, seats_total,
-        price_per_seat, student_discount_pct, women_only, instant_book, vehicle, notes, departure_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
-    const ids = transaction(db, () => departures.map((d) => Number(insert.run(...fields, d).lastInsertRowid)));
+        price_per_seat, student_discount_pct, women_only, instant_book, vehicle, notes,
+        payment_methods, payment_details, departure_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+    const matches = db.prepare(`
+      SELECT id, passenger_id FROM ride_requests
+      WHERE status = 'open' AND from_city = ? COLLATE NOCASE AND to_city = ? COLLATE NOCASE
+        AND earliest_at <= ? AND latest_at >= ? AND passenger_id != ?`);
+    const ids = transaction(db, () => departures.map((d) => {
+      const id = Number(insert.run(...fields, d).lastInsertRowid);
+      for (const m of matches.all(from, to, d, d, req.user.id)) {
+        notify(db, m.passenger_id, `A ride matches your request: ${from} → ${to}`,
+          `${req.user.name} is driving on ${when(d)}`, `/ride/${id}`);
+      }
+      return id;
+    }));
     res.status(201).json(ids.map((id) => shapeRide(db, getRide(id))));
+  });
+
+  // Drivers may update the details passengers rely on, but not the route,
+  // time, seats or price once people have booked against them.
+  router.patch('/rides/:id', requireUser, (req, res) => {
+    const ride = getRide(req.params.id);
+    if (ride.driver_id !== req.user.id) throw new HttpError(403, 'Only the driver can edit this ride');
+    if (ride.status !== 'scheduled') throw bad(`This ride is ${ride.status}`);
+    const b = req.body || {};
+    const fields = {
+      pickup_point: () => str(b.pickup_point, 'Pickup point', { max: 120 }),
+      dropoff_point: () => str(b.dropoff_point, 'Drop-off point', { max: 120 }),
+      vehicle: () => str(b.vehicle, 'Vehicle', { max: 80 }),
+      notes: () => str(b.notes, 'Notes', { max: 500 }),
+      payment_methods: () => paymentMethods(b.payment_methods),
+      payment_details: () => str(b.payment_details, 'Payment details', { max: 200 }),
+      instant_book: () => (b.instant_book ? 1 : 0),
+    };
+    const updates = Object.keys(fields).filter((k) => k in b).map((k) => [k, fields[k]()]);
+    if (!updates.length) throw bad('Nothing to update');
+    db.prepare(`UPDATE rides SET ${updates.map(([k]) => `${k} = ?`).join(', ')} WHERE id = ?`)
+      .run(...updates.map(([, v]) => v), ride.id);
+    for (const p of participants(db, ride).passengers) {
+      notify(db, p.id, 'Ride details updated', `${route(ride)} on ${when(ride.departure_at)}`, `/ride/${ride.id}`);
+    }
+    res.json(shapeRide(db, getRide(ride.id)));
   });
 
   router.post('/rides/:id/cancel', requireUser, (req, res) => {
@@ -152,8 +207,13 @@ module.exports = function ridesRouter(db) {
     if (ride.driver_id !== req.user.id) throw new HttpError(403, 'Only the driver can cancel this ride');
     if (ride.status !== 'scheduled') throw bad(`This ride is already ${ride.status}`);
     transaction(db, () => {
+      const affected = db.prepare(`SELECT passenger_id FROM bookings WHERE ride_id = ? AND ${HELD}`).all(ride.id);
       db.prepare(`UPDATE rides SET status = 'cancelled' WHERE id = ?`).run(ride.id);
       db.prepare(`UPDATE bookings SET status = 'cancelled' WHERE ride_id = ? AND ${HELD}`).run(ride.id);
+      for (const a of affected) {
+        notify(db, a.passenger_id, 'Ride cancelled by the driver',
+          `${route(ride)} on ${when(ride.departure_at)}. Search for another ride.`, `/search?from=${encodeURIComponent(ride.from_city)}&to=${encodeURIComponent(ride.to_city)}`);
+      }
     });
     res.json(shapeRide(db, getRide(ride.id)));
   });
@@ -167,6 +227,9 @@ module.exports = function ridesRouter(db) {
       db.prepare(`UPDATE rides SET status = 'completed' WHERE id = ?`).run(ride.id);
       // Requests nobody answered before departure lapse.
       db.prepare(`UPDATE bookings SET status = 'rejected' WHERE ride_id = ? AND status = 'pending'`).run(ride.id);
+      for (const p of participants(db, ride).passengers) {
+        notify(db, p.id, 'How was your trip?', `Rate ${req.user.name} for ${route(ride)}`, `/ride/${ride.id}`);
+      }
     });
     res.json(shapeRide(db, getRide(ride.id)));
   });
@@ -202,6 +265,9 @@ module.exports = function ridesRouter(db) {
       const { lastInsertRowid } = db.prepare(`
         INSERT INTO bookings (ride_id, passenger_id, seats, price_per_seat, status, message)
         VALUES (?, ?, ?, ?, ?, ?)`).run(ride.id, req.user.id, seats, priceFor(ride, req.user), status, message);
+      notify(db, ride.driver_id,
+        status === 'confirmed' ? `New booking: ${req.user.name}` : `New booking request from ${req.user.name}`,
+        `${seats} seat(s) on ${route(ride)}, ${when(ride.departure_at)}`, `/ride/${ride.id}`);
       return getBooking(lastInsertRowid);
     });
     res.status(201).json(booking);
@@ -225,6 +291,9 @@ module.exports = function ridesRouter(db) {
       if (!from.includes(booking.status)) throw bad(`This booking is already ${booking.status}`);
       if (ride.status !== 'scheduled') throw bad(`This ride is ${ride.status}`);
       db.prepare('UPDATE bookings SET status = ? WHERE id = ?').run(to, booking.id);
+      notify(db, booking.passenger_id,
+        to === 'confirmed' ? 'Booking confirmed 🎉' : 'Booking request declined',
+        `${route(ride)} on ${when(ride.departure_at)}`, `/ride/${ride.id}`);
       return getBooking(booking.id);
     });
     res.json(updated);
@@ -242,6 +311,8 @@ module.exports = function ridesRouter(db) {
       const ride = getRide(booking.ride_id);
       if (ride.status !== 'scheduled') throw bad(`This ride is ${ride.status}`);
       db.prepare(`UPDATE bookings SET status = 'cancelled' WHERE id = ?`).run(booking.id);
+      notify(db, ride.driver_id, `${req.user.name} cancelled their booking`,
+        `${booking.seats} seat(s) freed on ${route(ride)}, ${when(ride.departure_at)}`, `/ride/${ride.id}`);
       return getBooking(booking.id);
     });
     res.json(updated);

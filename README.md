@@ -13,8 +13,17 @@ Drivers who are already going between cities post their empty seats; passengers 
 - **Booking flow**: driver approves each request, or turns on *instant booking*. Seats on pending requests are held so a ride can't be overbooked.
 - **Privacy**: phone numbers are shown only between a driver and their *confirmed* passengers.
 - **Trust**: profiles show traveller type, company/university, and ratings and reviews left after completed rides.
-- **My trips**: bookings as a passenger, rides as a driver, with pending request counts.
-- Mobile-first web app, installable as a PWA, with light and dark themes.
+- **ID verification**: members upload a photo of their CNIC, student card, employee card or driving licence; an admin approves it and the profile gets a ✔ Verified badge.
+- **My trips**: bookings as a passenger, rides as a driver, and your ride requests.
+- **Ride requests**: passengers post "I need a ride Multan → Lahore on Friday". Drivers browse them, and the passenger is notified automatically when a matching ride is posted.
+- **Chat**: a private conversation per booking between driver and passenger, with unread badges.
+- **Notifications**: in-app alerts for booking requests, confirmations, cancellations, ride changes, matching rides, verification results and "rate your trip".
+- **Payments**: drivers choose accepted methods (cash, JazzCash, Easypaisa, bank transfer); their account details are shown only to confirmed passengers.
+- **Safety**: SOS panel with one-tap calls to Police 15, Rescue 1122 and Motorway Police 130, an SMS to your emergency contact with trip details and current location, trip sharing, and reporting users.
+- **Ride editing**: drivers can update pickup/drop-off, vehicle, notes and payment details; passengers are notified.
+- **Admin panel**: stats, verification queue with document viewer, user reports, user search and suspension.
+- **Account**: change password (signs out other devices), emergency contact.
+- Mobile-first web app, installable as a PWA, with light and dark themes, plus an **Android app** (see below).
 
 ## Tech stack
 
@@ -32,9 +41,47 @@ npm test         # API tests
 ```
 
 Demo accounts after seeding: `ahmed@example.com` (professional), `ayesha@example.com` (student),
-`bilal@example.com` (traveller), `sara@example.com` (professional, offers a women-only ride).
+`bilal@example.com` (traveller), `sara@example.com` (professional, offers a women-only ride) and
+`admin@example.com` (admin).
 
-Environment variables: `PORT` (default `3000`) and `DB_FILE` (default `data/abc-rides.db`).
+Environment variables:
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `PORT` | `3000` | HTTP port |
+| `DB_FILE` | `data/abc-rides.db` | SQLite database file |
+| `UPLOAD_DIR` | `data/uploads` | Uploaded ID documents (private, admin-only) |
+| `ADMIN_EMAILS` | | Comma-separated emails that get the admin role |
+
+## Android app
+
+`android/` holds a small native Android app (a WebView shell around the web app) that adds photo
+picking for ID verification, location for SOS, the share sheet, dialer/SMS/WhatsApp links and the
+back button. On first launch it asks for the server address; change it later under
+**Profile → Change server**.
+
+Build it without Gradle or the full Android SDK, using the tools Ubuntu/Debian package:
+
+```bash
+sudo apt-get install aapt dalvik-exchange zipalign apksigner android-sdk-platform-23 default-jdk-headless
+android/build.sh                                  # asks for the server on first launch
+android/build.sh https://abc-rides.onrender.com   # or bake a server address in
+# → android/build/abc-rides.apk
+```
+
+Signing uses `android/debug.keystore`, created on the first build and git-ignored. Keep it: updates
+only install over an app signed with the same key. Set `KEYSTORE`, `KEYSTORE_PASS` and `KEY_ALIAS`
+to sign with a release key.
+
+**Testing on a phone over Wi-Fi:** run `npm start` on your computer, find its local IP (`ipconfig` on
+Windows, `ip addr` on Linux/macOS), install the APK on the phone, and enter `http://<that-ip>:3000`.
+Both devices must be on the same Wi-Fi, and the firewall must allow port 3000.
+
+## Deploying the server
+
+- **Docker:** `docker build -t abc-rides . && docker run -p 3000:3000 -v abc-data:/data -e ADMIN_EMAILS=you@example.com abc-rides`
+- **Render:** New → Blueprint → select this repo (`render.yaml`). The free plan has no persistent
+  disk, so data resets on redeploy; attach a disk at `/data` to keep it.
 
 ## Project layout
 
@@ -45,11 +92,16 @@ server/
   db.js             SQLite schema and transaction helper
   auth.js           password hashing, sessions, auth middleware
   errors.js         HttpError and input validators
-  routes/users.js   register, login, profile, public profiles
+  notify.js         in-app notification helper
+  routes/users.js   register, login, profile, verification upload, notifications
   routes/rides.js   rides, search, bookings, reviews
+  routes/requests.js ride requests
+  routes/messages.js chat and user reports
+  routes/admin.js   admin panel API
   seed.js           demo data
 public/             web app (index.html, app.js, styles.css, manifest)
-test/api.test.js    end-to-end API tests (node:test)
+android/            Android app (WebView shell) and its build script
+test/               API tests (node:test)
 ```
 
 ## API overview
@@ -75,13 +127,27 @@ All endpoints are under `/api`. Send `Authorization: Bearer <token>` for the one
 | POST | `/bookings/:id/confirm` · `/reject` 🔒 | Driver answers a request |
 | POST | `/bookings/:id/cancel` 🔒 | Passenger cancels |
 | POST | `/rides/:id/reviews` 🔒 | Rate the driver or a passenger after a completed ride |
+| PATCH | `/rides/:id` 🔒 | Driver edits pickup/drop-off, vehicle, notes, payment, instant booking |
+| POST | `/me/password` 🔒 | Change password |
+| POST | `/me/verification` 🔒 | Upload an ID document photo (data URL) for review |
+| GET | `/notifications` · `/notifications/unread-count` 🔒 | Alerts, and unread counts for badges |
+| POST | `/notifications/read-all` 🔒 | Mark alerts read |
+| GET / POST | `/bookings/:id/messages` 🔒 | Chat between the driver and a passenger |
+| GET | `/me/conversations` 🔒 | Chat inbox |
+| GET / POST | `/ride-requests` | Browse / post (🔒) ride requests |
+| GET | `/me/ride-requests` 🔒 | Your ride requests |
+| POST | `/ride-requests/:id/close` 🔒 | Close your request |
+| POST | `/reports` 🔒 | Report a user |
+| GET | `/admin/stats` · `/admin/users` · `/admin/verifications` · `/admin/reports` 🛠 | Admin views |
+| GET | `/admin/users/:id/document` 🛠 | View an uploaded ID document |
+| POST | `/admin/users/:id/verification` · `/admin/users/:id/suspend` · `/admin/reports/:id/resolve` 🛠 | Admin actions |
 
-## Roadmap ideas
+🛠 = admin only.
 
-- Phone/OTP login and CNIC / student-ID / company-email verification badges
-- Push and SMS notifications for booking requests and confirmations
-- In-app chat between the driver and passengers
-- Ride requests ("I need a ride Lahore → Multan on Friday") that drivers can respond to
-- Maps for pickup points, live trip sharing and an SOS button
-- Online payments (JazzCash / Easypaisa) and cancellation policies
-- Native Android/iOS app on top of the same API
+## Not built yet (needs third-party accounts)
+
+- **Phone OTP login and password reset by SMS/email**: needs an SMS or email provider (e.g. Twilio, a local SMS gateway, or SMTP).
+- **Push notifications while the app is closed**: needs Firebase Cloud Messaging. Today alerts appear in the app's inbox.
+- **Online payments in the app**: needs JazzCash/Easypaisa merchant accounts. Today passengers pay drivers directly using the methods the driver lists.
+- **Maps and live location tracking**: needs a maps API key.
+- **iOS app**: the web app works in Safari and can be added to the home screen.

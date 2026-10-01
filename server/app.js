@@ -4,18 +4,28 @@ const { loadUser } = require('./auth');
 const cities = require('./cities');
 const usersRouter = require('./routes/users');
 const ridesRouter = require('./routes/rides');
+const requestsRouter = require('./routes/requests');
+const messagesRouter = require('./routes/messages');
+const adminRouter = require('./routes/admin');
 
-function createApp(db) {
+const LARGE_BODY_PATHS = new Set(['/api/me/verification']);
+
+function createApp(db, { uploadDir = process.env.UPLOAD_DIR || path.join(__dirname, '..', 'data', 'uploads') } = {}) {
   const app = express();
   app.disable('x-powered-by');
-  app.use(express.json({ limit: '100kb' }));
+  const json = express.json({ limit: '100kb' });
+  // Document uploads parse their own (larger) body.
+  app.use((req, res, next) => (LARGE_BODY_PATHS.has(req.path) ? next() : json(req, res, next)));
 
   const api = express.Router();
   api.use(loadUser(db));
   api.get('/health', (_req, res) => res.json({ ok: true }));
   api.get('/cities', (_req, res) => res.json(cities));
-  api.use(usersRouter(db));
+  api.use(usersRouter(db, { uploadDir }));
   api.use(ridesRouter(db));
+  api.use(requestsRouter(db));
+  api.use(messagesRouter(db));
+  api.use('/admin', adminRouter(db, { uploadDir }));
   api.use((_req, res) => res.status(404).json({ error: 'Not found' }));
   app.use('/api', api);
 
@@ -23,6 +33,7 @@ function createApp(db) {
 
   app.use((err, _req, res, _next) => {
     if (err.type === 'entity.parse.failed') return res.status(400).json({ error: 'Invalid JSON body' });
+    if (err.type === 'entity.too.large') return res.status(413).json({ error: 'Upload is too large' });
     const status = err.status || 500;
     if (status >= 500) console.error(err);
     res.status(status).json({ error: status >= 500 ? 'Something went wrong' : err.message });

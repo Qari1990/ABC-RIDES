@@ -1,0 +1,12 @@
+# One-click deploy on Render (https://render.com): New → Blueprint → pick this repo.
+# The free plan has no persistent disk, so data resets on each deploy/restart;
+# fine for testing. Add a disk (paid) mounted at /data to keep data.
+services:
+  - type: web
+    name: abc-rides
+    runtime: docker
+    plan: free
+    healthCheckPath: /api/health
+    envVars:
+      - key: ADMIN_EMAILS
+        sync: false

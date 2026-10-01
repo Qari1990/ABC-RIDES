@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Connect to ABC Rides</title>
+  <style>
+    :root { --brand: #0f766e; --text: #0f172a; --muted: #64748b; --border: #e2e8f0; --bg: #f8fafc; }
+    * { box-sizing: border-box; }
+    body { margin: 0; font: 16px/1.5 system-ui, sans-serif; color: var(--text); background: var(--bg); }
+    header { background: linear-gradient(135deg, #0f766e, #134e4a); color: #fff; padding: 32px 20px 24px; }
+    header h1 { margin: 0 0 4px; font-size: 1.6rem; }
+    header p { margin: 0; opacity: .9; }
+    main { padding: 20px; max-width: 520px; margin: 0 auto; }
+    label { display: block; font-weight: 600; margin-bottom: 6px; }
+    input { width: 100%; font: inherit; padding: 12px; border: 1px solid var(--border); border-radius: 10px; min-height: 48px; background: #fff; }
+    button { width: 100%; margin-top: 12px; font: inherit; font-weight: 700; padding: 12px; min-height: 48px; border: 0; border-radius: 10px; background: var(--brand); color: #fff; }
+    .error { background: #fee2e2; color: #991b1b; border-radius: 10px; padding: 10px 12px; margin-bottom: 16px; word-wrap: break-word; }
+    .help { color: var(--muted); font-size: .9rem; margin-top: 20px; }
+    .help b { color: var(--text); }
+    code { background: #e2e8f0; padding: 1px 5px; border-radius: 4px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>🚗 ABC Rides</h1>
+    <p>Intercity rides for commuters, students &amp; travellers</p>
+  </header>
+  <main>
+    <div id="error" class="error" hidden></div>
+    <form id="f">
+      <label for="url">Server address</label>
+      <input id="url" type="text" inputmode="url" autocapitalize="off" autocorrect="off" placeholder="http://192.168.1.10:3000" required>
+      <button type="submit">Connect</button>
+    </form>
+    <div class="help">
+      <p><b>Testing on Wi-Fi:</b> run <code>npm start</code> on your computer, then enter its address, e.g. <code>http://192.168.1.10:3000</code>. The phone and computer must be on the same Wi-Fi.</p>
+      <p><b>Hosted server:</b> enter its https address, e.g. <code>https://abc-rides.onrender.com</code>.</p>
+      <p>You can change this later from <b>Profile → Change server</b>.</p>
+    </div>
+  </main>
+  <script>
+    var params = new URLSearchParams(location.search);
+    var input = document.getElementById('url');
+    input.value = params.get('server') || '';
+    if (params.get('error')) {
+      var e = document.getElementById('error');
+      e.textContent = params.get('error');
+      e.hidden = false;
+    }
+    document.getElementById('f').addEventListener('submit', function (ev) {
+      ev.preventDefault();
+      if (window.AbcAndroid) window.AbcAndroid.saveServer(input.value);
+    });
+  </script>
+</body>
+</html>

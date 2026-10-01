@@ -31,7 +31,7 @@ function bearerToken(req) {
 function loadUser(db) {
   const stmt = db.prepare(`
     SELECT u.* FROM sessions s JOIN users u ON u.id = s.user_id
-    WHERE s.token = ? AND s.expires_at > ?`);
+    WHERE s.token = ? AND s.expires_at > ? AND u.suspended = 0`);
   return (req, _res, next) => {
     const token = bearerToken(req);
     req.user = token ? stmt.get(token, new Date().toISOString()) || null : null;
@@ -45,4 +45,10 @@ function requireUser(req, _res, next) {
   next();
 }
 
-module.exports = { hashPassword, verifyPassword, createSession, loadUser, requireUser };
+function requireAdmin(req, _res, next) {
+  if (!req.user) return next(new HttpError(401, 'Please log in first'));
+  if (req.user.role !== 'admin') return next(new HttpError(403, 'Admins only'));
+  next();
+}
+
+module.exports = { hashPassword, verifyPassword, createSession, loadUser, requireUser, requireAdmin };

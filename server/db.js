@@ -13,6 +13,14 @@ CREATE TABLE IF NOT EXISTS users (
   gender          TEXT CHECK (gender IN ('male', 'female', 'other')),
   organization    TEXT,
   bio             TEXT,
+  role            TEXT NOT NULL DEFAULT 'user' CHECK (role IN ('user', 'admin')),
+  suspended       INTEGER NOT NULL DEFAULT 0,
+  verification_status TEXT NOT NULL DEFAULT 'none' CHECK (verification_status IN ('none', 'pending', 'verified', 'rejected')),
+  verification_doc_type TEXT,
+  verification_file TEXT,
+  verification_note TEXT,
+  emergency_name  TEXT,
+  emergency_phone TEXT,
   created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
@@ -37,6 +45,8 @@ CREATE TABLE IF NOT EXISTS rides (
   instant_book          INTEGER NOT NULL DEFAULT 0,
   vehicle               TEXT,
   notes                 TEXT,
+  payment_methods       TEXT NOT NULL DEFAULT 'cash',
+  payment_details       TEXT,
   status                TEXT NOT NULL DEFAULT 'scheduled' CHECK (status IN ('scheduled', 'cancelled', 'completed')),
   created_at            TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
@@ -65,13 +75,90 @@ CREATE TABLE IF NOT EXISTS reviews (
   created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
   UNIQUE (ride_id, reviewer_id, reviewee_id)
 );
+
+CREATE TABLE IF NOT EXISTS notifications (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id     INTEGER NOT NULL REFERENCES users(id),
+  title       TEXT NOT NULL,
+  body        TEXT,
+  link        TEXT,
+  read_at     TEXT,
+  created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+CREATE INDEX IF NOT EXISTS notifications_user ON notifications (user_id, id);
+
+CREATE TABLE IF NOT EXISTS messages (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  booking_id  INTEGER NOT NULL REFERENCES bookings(id),
+  sender_id   INTEGER NOT NULL REFERENCES users(id),
+  body        TEXT NOT NULL,
+  read_at     TEXT,
+  created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+CREATE INDEX IF NOT EXISTS messages_booking ON messages (booking_id, id);
+
+CREATE TABLE IF NOT EXISTS ride_requests (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  passenger_id  INTEGER NOT NULL REFERENCES users(id),
+  from_city     TEXT NOT NULL,
+  to_city       TEXT NOT NULL,
+  earliest_at   TEXT NOT NULL,
+  latest_at     TEXT NOT NULL,
+  seats         INTEGER NOT NULL CHECK (seats BETWEEN 1 AND 8),
+  max_price     INTEGER,
+  notes         TEXT,
+  status        TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'closed')),
+  created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+CREATE INDEX IF NOT EXISTS ride_requests_route ON ride_requests (from_city, to_city, latest_at);
+
+CREATE TABLE IF NOT EXISTS reports (
+  id                INTEGER PRIMARY KEY AUTOINCREMENT,
+  reporter_id       INTEGER NOT NULL REFERENCES users(id),
+  reported_user_id  INTEGER NOT NULL REFERENCES users(id),
+  ride_id           INTEGER REFERENCES rides(id),
+  reason            TEXT NOT NULL,
+  details           TEXT,
+  status            TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'resolved')),
+  resolution        TEXT,
+  created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
 `;
+
+// Columns added after the first release. CREATE TABLE IF NOT EXISTS leaves
+// older databases untouched, so add any missing columns here.
+const ADDED_COLUMNS = {
+  users: {
+    role: `TEXT NOT NULL DEFAULT 'user'`,
+    suspended: 'INTEGER NOT NULL DEFAULT 0',
+    verification_status: `TEXT NOT NULL DEFAULT 'none'`,
+    verification_doc_type: 'TEXT',
+    verification_file: 'TEXT',
+    verification_note: 'TEXT',
+    emergency_name: 'TEXT',
+    emergency_phone: 'TEXT',
+  },
+  rides: {
+    payment_methods: `TEXT NOT NULL DEFAULT 'cash'`,
+    payment_details: 'TEXT',
+  },
+};
+
+function migrate(db) {
+  for (const [table, columns] of Object.entries(ADDED_COLUMNS)) {
+    const existing = new Set(db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name));
+    for (const [name, type] of Object.entries(columns)) {
+      if (!existing.has(name)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${type}`);
+    }
+  }
+}
 
 function openDb(file = process.env.DB_FILE || path.join(__dirname, '..', 'data', 'abc-rides.db')) {
   if (file !== ':memory:') fs.mkdirSync(path.dirname(file), { recursive: true });
   const db = new DatabaseSync(file);
   db.exec('PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;');
   db.exec(SCHEMA);
+  migrate(db);
   return db;
 }
 
