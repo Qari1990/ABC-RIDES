@@ -196,3 +196,26 @@ test('change password signs out other devices; profile fields can be cleared', a
   assert.equal(patched.body.name, u.user.name, 'required fields are not cleared');
   assert.equal(patched.body.emergency_phone, '+92 300 9999999');
 });
+
+test('travel time is estimated from the cities, can be overridden, and gives an arrival time', async () => {
+  const driver = await register();
+  const est = await call('GET', '/route-estimate?from=lahore&to=Islamabad');
+  assert.ok(est.body.duration_minutes >= 225 && est.body.duration_minutes <= 300, `got ${est.body.duration_minutes}`);
+  assert.ok(est.body.distance_km >= 300 && est.body.distance_km <= 400, `got ${est.body.distance_km}`);
+  assert.equal((await call('GET', '/route-estimate?from=Lahore&to=Nowhere')).body, null);
+
+  const auto = (await call('POST', '/rides', { token: driver.token, body: rideBody() })).body[0];
+  assert.equal(auto.duration_minutes, est.body.duration_minutes);
+  assert.equal(new Date(auto.arrival_at) - new Date(auto.departure_at), auto.duration_minutes * 60000);
+
+  const custom = (await call('POST', '/rides', { token: driver.token, body: rideBody({ duration_minutes: 300 }) })).body[0];
+  assert.equal(custom.duration_minutes, 300);
+
+  const unknown = (await call('POST', '/rides', { token: driver.token, body: rideBody({ from_city: 'Chiniot' }) })).body[0];
+  assert.equal(unknown.duration_minutes, null);
+  assert.equal(unknown.arrival_at, null);
+
+  const edited = await call('PATCH', `/rides/${unknown.id}`, { token: driver.token, body: { duration_minutes: 150 } });
+  assert.equal(edited.body.duration_minutes, 150);
+  assert.equal((await call('POST', '/rides', { token: driver.token, body: rideBody({ duration_minutes: 5 }) })).status, 400);
+});

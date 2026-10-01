@@ -1,7 +1,7 @@
 const express = require('express');
 const path = require('node:path');
 const { loadUser } = require('./auth');
-const cities = require('./cities');
+const { CITIES, estimateRoute } = require('./cities');
 const usersRouter = require('./routes/users');
 const ridesRouter = require('./routes/rides');
 const requestsRouter = require('./routes/requests');
@@ -20,7 +20,8 @@ function createApp(db, { uploadDir = process.env.UPLOAD_DIR || path.join(__dirna
   const api = express.Router();
   api.use(loadUser(db));
   api.get('/health', (_req, res) => res.json({ ok: true }));
-  api.get('/cities', (_req, res) => res.json(cities));
+  api.get('/cities', (_req, res) => res.json(CITIES));
+  api.get('/route-estimate', (req, res) => res.json(estimateRoute(req.query.from, req.query.to)));
   api.use(usersRouter(db, { uploadDir }));
   api.use(ridesRouter(db));
   api.use(requestsRouter(db));

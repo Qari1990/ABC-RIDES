@@ -4,6 +4,7 @@ const { transaction } = require('../db');
 const { HttpError, bad, str, int, isoDate } = require('../errors');
 const { notify, route, when } = require('../notify');
 const { publicUser } = require('./users');
+const { estimateRoute } = require('../cities');
 
 const MAX_DEPARTURES = 30;
 const PAYMENT_METHODS = ['cash', 'jazzcash', 'easypaisa', 'bank_transfer'];
@@ -36,6 +37,9 @@ function shapeRide(db, ride) {
   return {
     ...rest,
     payment_methods: ride.payment_methods.split(','),
+    arrival_at: ride.duration_minutes
+      ? new Date(new Date(ride.departure_at).getTime() + ride.duration_minutes * 60000).toISOString()
+      : null,
     women_only: !!ride.women_only,
     instant_book: !!ride.instant_book,
     student_price: studentPrice(ride),
@@ -155,12 +159,14 @@ module.exports = function ridesRouter(db) {
       str(b.notes, 'Notes', { max: 500 }),
       paymentMethods(b.payment_methods),
       str(b.payment_details, 'Payment details', { max: 200 }),
+      // Drivers may give their own travel time; otherwise estimate it from the cities.
+      int(b.duration_minutes, 'Travel time', { min: 15, max: 48 * 60, fallback: estimateRoute(from, to)?.duration_minutes ?? null }),
     ];
     const insert = db.prepare(`
       INSERT INTO rides (driver_id, from_city, to_city, pickup_point, dropoff_point, seats_total,
         price_per_seat, student_discount_pct, women_only, instant_book, vehicle, notes,
-        payment_methods, payment_details, departure_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+        payment_methods, payment_details, duration_minutes, departure_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
     const matches = db.prepare(`
       SELECT id, passenger_id FROM ride_requests
       WHERE status = 'open' AND from_city = ? COLLATE NOCASE AND to_city = ? COLLATE NOCASE
@@ -191,6 +197,7 @@ module.exports = function ridesRouter(db) {
       payment_methods: () => paymentMethods(b.payment_methods),
       payment_details: () => str(b.payment_details, 'Payment details', { max: 200 }),
       instant_book: () => (b.instant_book ? 1 : 0),
+      duration_minutes: () => int(b.duration_minutes, 'Travel time', { min: 15, max: 48 * 60, fallback: null }),
     };
     const updates = Object.keys(fields).filter((k) => k in b).map((k) => [k, fields[k]()]);
     if (!updates.length) throw bad('Nothing to update');

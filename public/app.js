@@ -22,7 +22,11 @@ async function api(path, { method = 'GET', body } = {}) {
   const res = await fetch(`/api${path}`, { method, headers, body: body ? JSON.stringify(body) : undefined });
   const data = res.status === 204 ? null : await res.json().catch(() => null);
   if (res.status === 401 && store.token && path !== '/auth/login') { store.token = null; me = null; }
-  if (!res.ok) throw new Error((data && data.error) || `Request failed (${res.status})`);
+  if (!res.ok) {
+    const err = new Error((data && data.error) || `Request failed (${res.status})`);
+    err.status = res.status;
+    throw err;
+  }
   return data;
 }
 
@@ -32,6 +36,15 @@ const $ = (sel, root = document) => root.querySelector(sel);
 const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const money = (n) => `Rs ${Number(n).toLocaleString('en-PK')}`;
 const when = (iso) => new Date(iso).toLocaleString('en-PK', { weekday: 'short', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' });
+const clock = (iso) => new Date(iso).toLocaleTimeString('en-PK', { hour: 'numeric', minute: '2-digit' });
+const duration = (min) => (min >= 60 ? `${Math.floor(min / 60)}h${min % 60 ? ` ${min % 60}m` : ''}` : `${min}m`);
+// "Fri, 2 Oct, 7:00 am → 11:15 am (4h 15m)"; the arrival is shown with a "+1" if it is the next day.
+const schedule = (r) => {
+  if (!r.arrival_at) return when(r.departure_at);
+  const days = Math.round((new Date(new Date(r.arrival_at).toDateString()) - new Date(new Date(r.departure_at).toDateString())) / 864e5);
+  return `${when(r.departure_at)} → ${clock(r.arrival_at)}${days > 0 ? ` (+${days})` : ''} · ${duration(r.duration_minutes)}`;
+};
+const TIME_SLOTS = { morning: ['Morning (before 12 pm)', 0, 12], afternoon: ['Afternoon (12–5 pm)', 12, 17], evening: ['Evening & night (after 5 pm)', 17, 24] };
 const timeAgo = (iso) => {
   const s = (Date.now() - new Date(iso)) / 1000;
   if (s < 60) return 'just now';
@@ -128,7 +141,7 @@ function rideCard(r) {
     <div class="ride-top">
       <div>
         <div class="route">${esc(r.from_city)} <span class="arrow">→</span> ${esc(r.to_city)}</div>
-        <div class="meta"><span>🕒 ${when(r.departure_at)}</span><span>💺 ${r.seats_left} left</span>${r.pickup_point ? `<span>📍 ${esc(r.pickup_point)}</span>` : ''}</div>
+        <div class="meta"><span>🕒 ${schedule(r)}</span><span>💺 ${r.seats_left} left</span>${r.pickup_point ? `<span>📍 ${esc(r.pickup_point)}</span>` : ''}</div>
       </div>
       <div class="price">${money(r.your_price ?? r.price_per_seat)}<small>per seat</small></div>
     </div>
@@ -187,6 +200,10 @@ function searchForm(q = {}) {
       <div class="field"><label for="date">Date <span class="muted">(optional)</span></label><input id="date" name="date" type="date" value="${esc(q.date || '')}"></div>
       <div class="field"><label for="seats">Seats</label><select id="seats" name="seats">${[1, 2, 3, 4].map((n) => `<option ${String(q.seats) === String(n) ? 'selected' : ''}>${n}</option>`).join('')}</select></div>
     </div>
+    <div class="field"><label for="time">Departure time</label><select id="time" name="time">
+      <option value="">Any time</option>
+      ${Object.entries(TIME_SLOTS).map(([k, [label]]) => `<option value="${k}" ${q.time === k ? 'selected' : ''}>${label}</option>`).join('')}
+    </select></div>
     <label class="check"><input type="checkbox" name="women_only" value="true" ${q.women_only === 'true' ? 'checked' : ''}> Women-only rides</label>
     <button class="btn block" type="submit">Find a ride</button>
   </form>`;
@@ -195,6 +212,7 @@ function searchForm(q = {}) {
 function bindSearch(page) {
   onSubmit($('#search', page), (d) => {
     const params = new URLSearchParams({ from: d.from.trim(), to: d.to.trim(), date: d.date || '', seats: d.seats });
+    if (d.time) params.set('time', d.time);
     if (d.women_only) params.set('women_only', 'true');
     location.hash = `#/search?${params}`;
   });
@@ -203,6 +221,25 @@ function bindSearch(page) {
 function paymentCheckboxes(selected = ['cash']) {
   return `<div class="days field">${Object.entries(PAY_LABEL).map(([k, label]) => `
     <label><input type="checkbox" name="pay" value="${k}" ${selected.includes(k) ? 'checked' : ''}><span>${label}</span></label>`).join('')}</div>`;
+}
+
+function durationFields(minutes) {
+  const h = minutes ? Math.floor(minutes / 60) : '';
+  const m = minutes ? minutes % 60 : '';
+  return `
+    <div class="field">
+      <label>Travel time</label>
+      <div class="row two duration">
+        <div class="suffix"><input name="dur_h" type="number" min="0" max="48" value="${h}" placeholder="4" aria-label="Hours"><span>hours</span></div>
+        <div class="suffix"><input name="dur_m" type="number" min="0" max="59" step="5" value="${m}" placeholder="15" aria-label="Minutes"><span>min</span></div>
+      </div>
+      <p class="muted small" id="dur-hint" style="margin:4px 0 0">Used to show passengers your arrival time.</p>
+    </div>`;
+}
+
+function durationValue(d) {
+  const total = Number(d.dur_h || 0) * 60 + Number(d.dur_m || 0);
+  return total > 0 ? total : null;
 }
 
 const checkedValues = (form, name) => [...form.querySelectorAll(`input[name=${name}]:checked`)].map((el) => el.value);
@@ -246,7 +283,11 @@ views.search = async (page, q) => {
     params.set('after', start.toISOString());
     params.set('before', end.toISOString());
   }
-  const rides = await api(`/rides?${params}`);
+  let rides = await api(`/rides?${params}`);
+  if (TIME_SLOTS[q.time]) {
+    const [, from, to] = TIME_SLOTS[q.time];
+    rides = rides.filter((r) => { const h = new Date(r.departure_at).getHours(); return h >= from && h < to; });
+  }
   const requestLink = `#/requests/new?${new URLSearchParams({ from: q.from || '', to: q.to || '', date: q.date || '', seats: q.seats || '1' })}`;
   $('#results', page).innerHTML = `
     <h2>${rides.length} ride${rides.length === 1 ? '' : 's'} from ${esc(q.from)} to ${esc(q.to)}</h2>
@@ -314,6 +355,7 @@ views.ride = async (page, _q, id) => {
             <div class="field"><label>Drop-off point</label><input name="dropoff_point" value="${esc(r.dropoff_point)}"></div>
           </div>
           <div class="field"><label>Vehicle</label><input name="vehicle" value="${esc(r.vehicle)}"></div>
+          ${durationFields(r.duration_minutes)}
           <div class="field"><label>Payment methods</label>${paymentCheckboxes(r.payment_methods)}</div>
           <div class="field"><label>Payment account details</label><input name="payment_details" value="${esc(r.payment_details)}" placeholder="e.g. JazzCash 0300 1234567 (Ahmed Raza)"></div>
           <div class="field"><label>Notes</label><textarea name="notes" maxlength="500">${esc(r.notes)}</textarea></div>
@@ -368,7 +410,7 @@ views.ride = async (page, _q, id) => {
       <div class="ride-top">
         <div>
           <div class="route">${esc(r.from_city)} <span class="arrow">→</span> ${esc(r.to_city)}</div>
-          <div class="meta"><span>🕒 ${when(r.departure_at)}</span><span>💺 ${r.seats_left} of ${r.seats_total} seats left</span></div>
+          <div class="meta"><span>💺 ${r.seats_left} of ${r.seats_total} seats left</span></div>
         </div>
         <div class="price">${money(r.your_price)}<small>per seat</small></div>
       </div>
@@ -378,7 +420,11 @@ views.ride = async (page, _q, id) => {
         ${r.women_only ? '<span class="badge women">♀ Women only</span>' : ''}
         ${r.instant_book ? '<span class="badge">⚡ Instant booking</span>' : '<span class="badge">Driver approves requests</span>'}
       </div>
-      <div class="list-row" style="margin-top:12px"><span class="muted">Pickup</span><span>${esc(r.pickup_point || 'Ask the driver')}</span></div>
+      <div class="list-row" style="margin-top:12px"><span class="muted">Departure</span><b>${when(r.departure_at)}</b></div>
+      ${r.arrival_at ? `
+      <div class="list-row"><span class="muted">Arrival (approx.)</span><span>${when(r.arrival_at)}</span></div>
+      <div class="list-row"><span class="muted">Travel time</span><span>${duration(r.duration_minutes)}</span></div>` : ''}
+      <div class="list-row"><span class="muted">Pickup</span><span>${esc(r.pickup_point || 'Ask the driver')}</span></div>
       <div class="list-row"><span class="muted">Drop-off</span><span>${esc(r.dropoff_point || 'Ask the driver')}</span></div>
       ${r.vehicle ? `<div class="list-row"><span class="muted">Vehicle</span><span>${esc(r.vehicle)}</span></div>` : ''}
       <div class="list-row"><span class="muted">Payment</span><span>${r.payment_methods.map((m) => PAY_LABEL[m]).join(', ')}</span></div>
@@ -415,6 +461,7 @@ views.ride = async (page, _q, id) => {
         body: {
           pickup_point: d.pickup_point, dropoff_point: d.dropoff_point, vehicle: d.vehicle, notes: d.notes,
           payment_methods: checkedValues(form, 'pay'), payment_details: d.payment_details, instant_book: !!d.instant_book,
+          duration_minutes: durationValue(d),
         },
       });
       toast('Ride updated. Passengers have been notified.');
@@ -489,6 +536,7 @@ views.offer = async (page, q) => {
         <div class="field"><label for="os">Seats</label><input id="os" name="seats_total" type="number" min="1" max="8" value="3" required></div>
         <div class="field"><label for="opr">Price per seat (Rs)</label><input id="opr" name="price_per_seat" type="number" min="0" step="50" value="2000" required></div>
       </div>
+      ${durationFields(null)}
       <div class="row two">
         <div class="field"><label for="ov">Vehicle</label><input id="ov" name="vehicle" placeholder="e.g. Toyota Corolla, white"></div>
         <div class="field"><label for="osd">Student discount (%)</label><input id="osd" name="student_discount_pct" type="number" min="0" max="100" value="0"></div>
@@ -509,6 +557,24 @@ views.offer = async (page, q) => {
     </form>`;
 
   const form = $('#offer', page);
+  // Fill in the estimated travel time when both cities are known, unless the driver typed one.
+  let touched = false;
+  form.dur_h.addEventListener('input', () => { touched = true; });
+  form.dur_m.addEventListener('input', () => { touched = true; });
+  const estimate = async () => {
+    if (touched || !form.from_city.value || !form.to_city.value) return;
+    const est = await api(`/route-estimate?${new URLSearchParams({ from: form.from_city.value, to: form.to_city.value })}`).catch(() => null);
+    $('#dur-hint', page).textContent = est ? `Estimated ≈ ${est.distance_km} km by road. Adjust if needed.` : 'Enter how long the trip usually takes.';
+    if (est) {
+      form.dur_h.value = Math.floor(est.duration_minutes / 60);
+      form.dur_m.value = est.duration_minutes % 60;
+    }
+  };
+  let timer;
+  const later = () => { clearTimeout(timer); timer = setTimeout(estimate, 400); };
+  form.from_city.addEventListener('input', later);
+  form.to_city.addEventListener('input', later);
+  estimate();
   onSubmit(form, async (d) => {
     const first = new Date(d.departure_at);
     const picked = checkedValues(form, 'day').map(Number);
@@ -530,6 +596,7 @@ views.offer = async (page, q) => {
         seats_total: Number(d.seats_total), price_per_seat: Number(d.price_per_seat),
         student_discount_pct: Number(d.student_discount_pct || 0), vehicle: d.vehicle, notes: d.notes,
         payment_methods: checkedValues(form, 'pay'), payment_details: d.payment_details,
+        duration_minutes: durationValue(d),
         instant_book: !!d.instant_book, women_only: !!d.women_only,
       },
     });
@@ -626,7 +693,7 @@ views.trips = async (page, q) => {
         <div class="ride-top">
           <div>
             <div class="route">${esc(r.from_city)} <span class="arrow">→</span> ${esc(r.to_city)}</div>
-            <div class="meta"><span>🕒 ${when(r.departure_at)}</span><span>💺 ${r.seats_total - r.seats_left}/${r.seats_total} booked</span></div>
+            <div class="meta"><span>🕒 ${schedule(r)}</span><span>💺 ${r.seats_total - r.seats_left}/${r.seats_total} booked</span></div>
           </div>
           <div class="price">${money(r.price_per_seat)}<small>per seat</small></div>
         </div>
@@ -1064,6 +1131,12 @@ async function render() {
   try {
     await fn(page, query, id);
   } catch (err) {
+    // Signed out elsewhere, suspended or session expired: go to the login screen.
+    if (err.status === 401 && name !== 'login') {
+      toast('Please log in again', true);
+      location.hash = `#/login?next=${encodeURIComponent(location.hash.slice(1))}`;
+      return;
+    }
     page.innerHTML = `<div class="card empty"><p>${esc(err.message)}</p><a class="btn" href="#/">Go home</a></div>`;
   }
   renderNav(parseHash().name);

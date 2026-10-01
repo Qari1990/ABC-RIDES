@@ -47,6 +47,7 @@ CREATE TABLE IF NOT EXISTS rides (
   notes                 TEXT,
   payment_methods       TEXT NOT NULL DEFAULT 'cash',
   payment_details       TEXT,
+  duration_minutes      INTEGER,
   status                TEXT NOT NULL DEFAULT 'scheduled' CHECK (status IN ('scheduled', 'cancelled', 'completed')),
   created_at            TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
@@ -141,6 +142,7 @@ const ADDED_COLUMNS = {
   rides: {
     payment_methods: `TEXT NOT NULL DEFAULT 'cash'`,
     payment_details: 'TEXT',
+    duration_minutes: 'INTEGER',
   },
 };
 

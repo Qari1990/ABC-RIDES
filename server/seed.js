@@ -3,6 +3,7 @@
 // admin@example.com is an admin.
 const { openDb, transaction } = require('./db');
 const { hashPassword } = require('./auth');
+const { estimateRoute } = require('./cities');
 
 const db = openDb();
 const hash = hashPassword('password123');
@@ -15,10 +16,12 @@ const users = [
   ['ABC Admin', 'admin@example.com', '+92 300 0000001', 'professional', null, 'ABC Rides'],
 ];
 
+// A time N days from today in Pakistan (UTC+5), whatever the server's timezone.
+const PKT_OFFSET_HOURS = 5;
 function at(daysAhead, hour, minute = 0) {
-  const d = new Date();
-  d.setDate(d.getDate() + daysAhead);
-  d.setHours(hour, minute, 0, 0);
+  const d = new Date(Date.now() + PKT_OFFSET_HOURS * 36e5);
+  d.setUTCDate(d.getUTCDate() + daysAhead);
+  d.setUTCHours(hour - PKT_OFFSET_HOURS, minute, 0, 0);
   return d.toISOString();
 }
 
@@ -43,9 +46,12 @@ transaction(db, () => {
   ];
   const insert = db.prepare(`
     INSERT INTO rides (driver_id, from_city, to_city, pickup_point, dropoff_point, departure_at, seats_total,
-      price_per_seat, student_discount_pct, women_only, instant_book, vehicle, notes, payment_methods, payment_details)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
-  for (const [email, ...rest] of rides) insert.run(ids[email], ...rest);
+      price_per_seat, student_discount_pct, women_only, instant_book, vehicle, notes, payment_methods, payment_details,
+      duration_minutes)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+  for (const [email, from, to, ...rest] of rides) {
+    insert.run(ids[email], from, to, ...rest, estimateRoute(from, to).duration_minutes);
+  }
 
   db.prepare(`
     INSERT INTO ride_requests (passenger_id, from_city, to_city, earliest_at, latest_at, seats, max_price, notes)

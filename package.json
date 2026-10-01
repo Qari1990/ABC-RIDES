@@ -12,10 +12,14 @@
     "start": "node --disable-warning=ExperimentalWarning server/index.js",
     "dev": "node --disable-warning=ExperimentalWarning --watch server/index.js",
     "seed": "node --disable-warning=ExperimentalWarning server/seed.js",
-    "test": "node --disable-warning=ExperimentalWarning --test test/*.test.js"
+    "test": "node --disable-warning=ExperimentalWarning --test test/*.test.js",
+    "test:e2e": "node --disable-warning=ExperimentalWarning --test test/e2e/*.e2e.js"
   },
   "license": "UNLICENSED",
   "dependencies": {
     "express": "^5.2.1"
+  },
+  "devDependencies": {
+    "playwright": "^1.63.0"
   }
 }

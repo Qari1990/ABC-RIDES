@@ -5,7 +5,8 @@ Drivers who are already going between cities post their empty seats; passengers 
 
 ## Features
 
-- **Find a ride**: search by from/to city, date (optional), seats needed and women-only.
+- **Find a ride**: search by from/to city, date (optional), time of day (morning/afternoon/evening), seats needed and women-only.
+- **Ride time**: each ride shows departure, estimated arrival and travel time (e.g. "7:00 am → 11:15 am · 4h 15m"). The travel time is estimated from the cities and drivers can adjust it.
 - **Offer a ride**: route, pickup/drop-off points, departure time, seats, price per seat, vehicle and notes.
 - **Commuter mode**: repeat a ride on chosen weekdays for up to 4 weeks (e.g. Lahore → Islamabad every Monday, back every Friday).
 - **Student discount**: drivers can set a % discount, applied automatically when a student books.
@@ -38,7 +39,13 @@ npm install
 npm run seed     # optional: demo users and rides (password: password123)
 npm start        # http://localhost:3000
 npm test         # API tests
+npm run test:e2e # end-to-end tests in a real browser (needs: npx playwright install chromium)
 ```
+
+The end-to-end suite signs up five users (driver, student, traveller, passenger, admin) and walks
+through every feature in Chromium: offering single, recurring and women-only rides, search filters,
+booking with approval, chat, ride edits, share/SOS, ride requests, ID verification, reports and
+suspension, completing and reviewing rides, cancellations and password change.
 
 Demo accounts after seeding: `ahmed@example.com` (professional), `ayesha@example.com` (student),
 `bilal@example.com` (traveller), `sara@example.com` (professional, offers a women-only ride) and
@@ -116,6 +123,7 @@ All endpoints are under `/api`. Send `Authorization: Bearer <token>` for the one
 | GET / PATCH | `/me` 🔒 | Your profile |
 | GET | `/users/:id` | Public profile, rating and reviews |
 | GET | `/cities` | Suggested cities |
+| GET | `/route-estimate?from=&to=` | Estimated road distance and travel time between two listed cities |
 | GET | `/rides?from=&to=&after=&before=&seats=&women_only=` | Search upcoming rides |
 | POST | `/rides` 🔒 | Offer a ride (`departure_at`, or `departures: [...]` for a series) |
 | GET | `/rides/:id` | Ride details (the driver also sees bookings) |
