@@ -140,6 +140,21 @@ async function chooseRoute(page, { from, to, pickup, drop }) {
   await page.waitForFunction(() => /km by road/.test(document.querySelector('#route-info').textContent));
 }
 
+// The Offer form is a wizard: Route → When & seats → Price → Extras → Review.
+async function toStep(page, n) {
+  for (let i = 0; i < 6; i++) {
+    const current = Number(await page.getAttribute('#offer section:not([hidden])', 'data-step'));
+    if (current >= n) break;
+    await page.click('#wiz-next');
+    await page.waitForSelector(`#offer [data-step="${current + 1}"]:not([hidden])`);
+  }
+}
+
+async function publish(page) {
+  await toStep(page, 5);
+  await page.click('#wiz-next');
+}
+
 const rideRow = (id) => db.prepare('SELECT * FROM rides WHERE id = ?').get(id);
 const rs = (n) => `Rs ${Number(n).toLocaleString('en-PK')}`;
 
@@ -220,15 +235,20 @@ test('2. offer a ride: travel time is estimated and payment details saved', asyn
   assert.match(await page.textContent('#route-info'), /Gujranwala/);
   assert.match(await page.textContent('#earnings'), /25% off[\s\S]*50% off/);
   assert.match(await page.textContent('#fare-info'), /bus about Rs/);
-  await page.fill('#ofk', '8');
+  await toStep(page, 2);
   await page.fill('#ow', localDateTime(2, 8));
+  await toStep(page, 3);
+  await page.fill('#ofk', '8');
   await page.fill('#osd', '20');
+  await page.click('.days >> text=JazzCash');
+  await page.fill('#opd', 'JazzCash 0300 1112233 (Sana)');
+  await toStep(page, 4);
   await page.check('[name=home_pickup]');
   await page.fill('#ohr', '6');
   await page.fill('#ov', 'Honda City (silver)');
-  await page.click('.days >> text=JazzCash');
-  await page.fill('#opd', 'JazzCash 0300 1112233 (Sana)');
-  await page.click('#offer [type=submit]');
+  await toStep(page, 5);
+  assert.match(await page.textContent('#offer-summary'), /Thokar Niaz Baig → Faizabad Interchange[\s\S]*Cash, JazzCash[\s\S]*pickup within 6 km/);
+  await publish(page);
   await page.waitForURL(/#\/ride\/\d+/);
   await page.waitForSelector('text=Arrival (approx.)');
   users['Sana Driver'].rideId = rideIdFromUrl(page);
@@ -247,13 +267,17 @@ test('3. recurring commute: Mon + Fri for 2 weeks posts 4 rides', async () => {
   const { page, go } = users['Sana Driver'];
   await go('/offer', '#offer');
   await chooseRoute(page, { from: 'Islamabad', to: 'Rawalpindi' });
+  await toStep(page, 2);
   await page.fill('#ow', localDateTime(1, 18));
   await page.fill('[name=dur_h]', '0');
   await page.fill('[name=dur_m]', '45');
-  await page.click('.days >> text=Mon');
-  await page.click('.days >> text=Fri');
+  await page.click('summary:has-text("Regular commute")');
+  await page.click('.days >> text="Mon"');
+  await page.click('.days >> text="Fri"');
   await page.selectOption('#oweeks', '2');
-  await page.click('#offer [type=submit]');
+  await toStep(page, 5);
+  assert.match(await page.textContent('#offer-summary'), /Repeats\s*Mon, Fri for 2 week/);
+  await publish(page);
   await page.waitForURL(/tab=driving/);
   await page.waitForSelector('#list .card');
   assert.equal(await page.locator('#list .card', { hasText: 'Rawalpindi' }).count(), 4);
@@ -264,10 +288,12 @@ test('4. women-only ride by a woman driver', async () => {
   const { page, go } = users['Sana Driver'];
   await go('/offer', '#offer');
   await chooseRoute(page, { from: 'Lahore', to: 'Faisalabad' });
+  await toStep(page, 2);
   await page.fill('#ow', localDateTime(3, 9));
+  await toStep(page, 4);
   await page.check('[name=women_only]');
   await page.check('[name=instant_book]');
-  await page.click('#offer [type=submit]');
+  await publish(page);
   await page.waitForURL(/#\/ride\/\d+/);
   users['Sana Driver'].womenRideId = rideIdFromUrl(page);
   await page.waitForSelector('text=Women only');
@@ -293,7 +319,7 @@ test('5. search: student price, arrival time and time-of-day filter', async () =
   assert.match(card, new RegExp(rs(Math.round(full * 0.8))), 'student pays 20% less');
   assert.match(card, /Rs [\d.]+\/km/);
   assert.match(card, /Home pickup/);
-  assert.match(card, /8:00 am → \d{1,2}:\d{2} (am|pm)/, 'arrival time shown');
+  assert.match(card, /8:00 am[\s\S]*Lahore[\s\S]*Thokar Niaz Baig[\s\S]*\d{1,2}:\d{2} (am|pm)[\s\S]*Islamabad/, 'departure and arrival times shown');
   assert.match(card, /20% student discount/);
 });
 
@@ -322,7 +348,7 @@ test('7. request to book → driver accepts → passenger sees phone and payment
   await sana.page.click('#inbox-list .card');
   await sana.page.waitForSelector('[data-action=confirm]');
   await sana.page.click('[data-action=confirm]');
-  await sana.page.waitForSelector('text=📞');
+  await sana.page.waitForSelector('.list-row a[href^="tel:"]');
 
   await ali.go(`/ride/${rideId}`, 'text=Your booking');
   const text = await ali.page.textContent('#view');
@@ -413,8 +439,9 @@ test('11. ride request → matching ride → passenger alerted', async () => {
   await sana.page.waitForSelector('#offer');
   assert.equal(await sana.page.inputValue('#of'), 'Multan');
   await sana.page.waitForFunction(() => /km by road/.test(document.querySelector('#route-info').textContent));
+  await toStep(sana.page, 2);
   await sana.page.fill('#ow', `${date}T10:00`);
-  await sana.page.click('#offer [type=submit]');
+  await publish(sana.page);
   await sana.page.waitForURL(/#\/ride\/\d+/);
 
   assert.ok(await badgeCount(zara) >= 1);
@@ -449,7 +476,7 @@ test('12. ID verification: one account per CNIC; a rejection tells the user what
   await users['Omar Passenger'].go(`/user/${aliId}`, '.person');
   const profile = await users['Omar Passenger'].page.textContent('#view');
   assert.match(profile, /CNIC verified by ABC Rides/);
-  assert.match(profile, /✔ Verified/);
+  assert.match(profile, /Verified/);
 });
 
 test('13. decline a request; passenger cancels a booking', async () => {
@@ -560,8 +587,9 @@ test('16b. wallet: fees after free bookings, top-ups approved by admin, commissi
     const admin = users.Admin;
     await sana.go('/offer', '#offer');
     await chooseRoute(sana.page, { from: 'Lahore', to: 'Sialkot', pickup: 'Kalma Chowk', drop: 'City centre (Allama Iqbal Chowk)' });
+    await toStep(sana.page, 2);
     await sana.page.fill('#ow', localDateTime(5, 7));
-    await sana.page.click('#offer [type=submit]');
+    await publish(sana.page);
     await sana.page.waitForURL(/#\/ride\/\d+/);
     const rideId = rideIdFromUrl(sana.page);
     const fare = rideRow(rideId).price_per_seat * 2;
@@ -634,9 +662,11 @@ test('16d. stops on the way and home drop-off: pay for your part of the route', 
   await chooseRoute(sana.page, { from: 'Lahore', to: 'Sialkot', pickup: 'Kalma Chowk', drop: 'City centre (Allama Iqbal Chowk)' });
   await sana.page.click('#route-info label:has-text("Gujranwala · City centre")');
   await sana.page.waitForFunction(() => /with 1 stop/.test(document.querySelector('#route-info').textContent));
-  await sana.page.check('[name=home_drop]');
+  await toStep(sana.page, 2);
   await sana.page.fill('#ow', localDateTime(6, 8));
-  await sana.page.click('#offer [type=submit]');
+  await toStep(sana.page, 4);
+  await sana.page.check('[name=home_drop]');
+  await publish(sana.page);
   await sana.page.waitForURL(/#\/ride\/\d+/);
   const rideId = rideIdFromUrl(sana.page);
   const stops = JSON.parse(rideRow(rideId).stops);
@@ -653,7 +683,7 @@ test('16d. stops on the way and home drop-off: pay for your part of the route', 
   // In Gujranwala, he finds the Lahore ride and pays only from Gujranwala.
   await omar.go('/search?from=Gujranwala&to=Sialkot&seats=1', '#results a.card');
   const card = omar.page.locator('#results a.card', { hasText: 'Lahore' });
-  assert.match(await card.textContent(), new RegExp(`City centre \\(Sheranwala Bagh\\), Gujranwala → City centre \\(Allama Iqbal Chowk\\), Sialkot[\\s\\S]*${rs(segPrice)}`));
+  assert.match(await card.textContent(), new RegExp(`${rs(segPrice)}[\\s\\S]*Gujranwala[\\s\\S]*City centre \\(Sheranwala Bagh\\)[\\s\\S]*Sialkot[\\s\\S]*City centre \\(Allama Iqbal Chowk\\)`));
   await card.click();
   await omar.page.waitForSelector('#book');
   assert.equal(await omar.page.inputValue('#bboard'), '1');

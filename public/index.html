@@ -5,19 +5,23 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>ABC Rides</title>
   <meta name="description" content="Share intercity rides with working professionals, students and regular travellers.">
-  <meta name="theme-color" content="#0f766e">
+  <meta name="theme-color" content="#0b7a5e" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#090e18" media="(prefers-color-scheme: dark)">
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="preload" href="fonts/inter-latin.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
   <header class="topbar">
-    <a href="#/" class="brand"><img src="icon.svg" alt="" width="28" height="28"> ABC Rides</a>
+    <a href="#/" class="brand"><img src="icon.svg" alt="" width="30" height="30"> ABC Rides</a>
     <nav class="nav" id="nav"></nav>
+    <div class="top-right" id="top-right"></div>
   </header>
   <main id="view" class="container" tabindex="-1"></main>
   <nav class="tabbar" id="tabbar"></nav>
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <script src="icons.js"></script>
   <script src="app.js"></script>
 </body>
 </html>
