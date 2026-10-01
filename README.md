@@ -22,7 +22,22 @@ Drivers who are already going between cities post their empty seats; passengers 
 - **Payments**: drivers choose accepted methods (cash, JazzCash, Easypaisa, bank transfer); their account details are shown only to confirmed passengers.
 - **Safety**: SOS panel with one-tap calls to Police 15, Rescue 1122 and Motorway Police 130, an SMS to your emergency contact with trip details and current location, trip sharing, and reporting users.
 - **Ride editing**: drivers can update pickup/drop-off, vehicle, notes and payment details; passengers are notified.
-- **Admin panel**: stats, verification queue with document viewer, user reports, user search and suspension.
+- **Onboarding with security**: sign up on one screen, then verify the phone with an SMS code. Identity
+  verification takes a CNIC number, CNIC front/back photos and a selfie (plus a student card for student prices).
+  Drivers register once with their licence and vehicle (make, model, year, colour, plate, seats, car photo,
+  registration). An admin reviews everything in one place. One account per CNIC and per phone number; photos are
+  checked to be real images; confirmed passengers see the car's plate so they can check it before getting in.
+- **Wallet & fees**: posting rides is free. When a booking is confirmed, the driver pays a commission and the
+  passenger a booking fee (both a % of the fare) from their wallets, after each user's first few free
+  confirmations. Users top up by sending money to the platform's JazzCash/Easypaisa/bank account and entering the
+  transaction ID; an admin approves it. Every charge, refund and top-up is recorded in the wallet history.
+- **Reliability points**: everyone starts at 100%. Cancelling a confirmed trip costs points (double close to
+  departure) and refunds the other side's fee; completed trips earn points back. Below the threshold, posting a
+  ride or confirming a booking costs an extra flat fee.
+- **Admin-controlled policy**: booking mode (driver's choice / always approve / always instant), commission
+  percentages, free confirmations, reliability threshold, penalties and fee, and which onboarding steps are required.
+- **Admin panel**: revenue and stats, verification queue with document viewer, wallet top-up approvals, settings,
+  user reports, user search, suspension, wallet adjustments and reliability overrides.
 - **Account**: change password (signs out other devices), emergency contact.
 - Mobile-first web app, installable as a PWA, with light and dark themes, plus an **Android app** (see below).
 
@@ -59,6 +74,16 @@ Environment variables:
 | `DB_FILE` | `data/abc-rides.db` | SQLite database file |
 | `UPLOAD_DIR` | `data/uploads` | Uploaded ID documents (private, admin-only) |
 | `ADMIN_EMAILS` | | Comma-separated emails that get the admin role |
+| `SMS_GATEWAY_URL` | | SMS provider send URL with `{to}` and `{message}` placeholders. Unset = development mode: phone codes are shown on screen |
+| `SMS_GATEWAY_METHOD` | `GET` | HTTP method for the SMS URL |
+| `SIGNUP_LIMIT_PER_HOUR` | `100` | Sign-ups allowed per network address per hour |
+
+Fees, booking mode and onboarding requirements are changed in the app under **Admin → Settings**.
+Default policy: phone verification required, drivers must be approved, student prices need a verified student
+card, drivers pay 5% and passengers 2% after 3 free confirmations, reliability threshold 70% with a Rs 100 fee.
+
+**Before going live**, set `SMS_GATEWAY_URL` (otherwise anyone can verify any phone number, since the code is shown
+on screen) and replace the placeholder top-up accounts in Admin → Settings with your real JazzCash/Easypaisa numbers.
 
 ## Android app
 
@@ -100,7 +125,15 @@ server/
   auth.js           password hashing, sessions, auth middleware
   errors.js         HttpError and input validators
   notify.js         in-app notification helper
-  routes/users.js   register, login, profile, verification upload, notifications
+  settings.js       admin-controlled policy (fees, booking mode, requirements)
+  wallet.js         wallet ledger, booking fees, reliability points
+  policy.js         onboarding checks (phone, identity, driver approval)
+  security.js       security headers and rate limiting
+  sms.js            SMS gateway and phone number normalisation
+  uploads.js        photo checks and storage
+  routes/users.js   register, login, profile, notifications
+  routes/onboarding.js phone codes, identity verification, driver registration
+  routes/wallet.js  wallet, top-ups, public settings
   routes/rides.js   rides, search, bookings, reviews
   routes/requests.js ride requests
   routes/messages.js chat and user reports
@@ -137,7 +170,6 @@ All endpoints are under `/api`. Send `Authorization: Bearer <token>` for the one
 | POST | `/rides/:id/reviews` 🔒 | Rate the driver or a passenger after a completed ride |
 | PATCH | `/rides/:id` 🔒 | Driver edits pickup/drop-off, vehicle, notes, payment, instant booking |
 | POST | `/me/password` 🔒 | Change password |
-| POST | `/me/verification` 🔒 | Upload an ID document photo (data URL) for review |
 | GET | `/notifications` · `/notifications/unread-count` 🔒 | Alerts, and unread counts for badges |
 | POST | `/notifications/read-all` 🔒 | Mark alerts read |
 | GET / POST | `/bookings/:id/messages` 🔒 | Chat between the driver and a passenger |
@@ -146,16 +178,27 @@ All endpoints are under `/api`. Send `Authorization: Bearer <token>` for the one
 | GET | `/me/ride-requests` 🔒 | Your ride requests |
 | POST | `/ride-requests/:id/close` 🔒 | Close your request |
 | POST | `/reports` 🔒 | Report a user |
+| POST | `/me/phone/send-code` · `/me/phone/verify` 🔒 | Phone verification by SMS code |
+| POST | `/me/verification` 🔒 | CNIC number + CNIC front/back + selfie (+ student/employee card), as data URLs |
+| POST | `/me/driver` 🔒 | Driver registration: licence + vehicle details and photos |
+| GET | `/settings` | Current fees, booking mode and requirements |
+| GET | `/me/wallet` 🔒 | Balance, reliability, free confirmations left, history |
+| POST | `/me/wallet/topups` 🔒 | Report a top-up (amount, method, transaction ID) |
+| GET / PUT | `/admin/settings` 🛠 | Read / change the policy |
+| GET | `/admin/topups` · POST `/admin/topups/:id/approve` · `/reject` 🛠 | Review top-ups |
+| POST | `/admin/users/:id/review` 🛠 | Approve or reject everything a user has pending |
+| GET | `/admin/documents/:id` 🛠 | View an uploaded document |
+| POST | `/admin/users/:id/wallet` · `/admin/users/:id/reliability` 🛠 | Adjust a wallet or reliability score |
 | GET | `/admin/stats` · `/admin/users` · `/admin/verifications` · `/admin/reports` 🛠 | Admin views |
-| GET | `/admin/users/:id/document` 🛠 | View an uploaded ID document |
-| POST | `/admin/users/:id/verification` · `/admin/users/:id/suspend` · `/admin/reports/:id/resolve` 🛠 | Admin actions |
+| POST | `/admin/users/:id/suspend` · `/admin/reports/:id/resolve` 🛠 | Admin actions |
 
 🛠 = admin only.
 
 ## Not built yet (needs third-party accounts)
 
-- **Phone OTP login and password reset by SMS/email**: needs an SMS or email provider (e.g. Twilio, a local SMS gateway, or SMTP).
+- **Password reset by SMS/email**: phone codes are built in (set `SMS_GATEWAY_URL`); reset-by-code is not built yet.
 - **Push notifications while the app is closed**: needs Firebase Cloud Messaging. Today alerts appear in the app's inbox.
-- **Online payments in the app**: needs JazzCash/Easypaisa merchant accounts. Today passengers pay drivers directly using the methods the driver lists.
+- **Automatic wallet top-ups**: needs JazzCash/Easypaisa merchant accounts. Today an admin approves each top-up after checking the transaction ID, and fares are paid to drivers directly.
+- **Automatic face matching** of selfie vs CNIC (and NADRA verification): today an admin compares them by eye.
 - **Maps and live location tracking**: needs a maps API key.
 - **iOS app**: the web app works in Safari and can be added to the home screen.

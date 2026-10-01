@@ -4,6 +4,7 @@
 const { openDb, transaction } = require('./db');
 const { hashPassword } = require('./auth');
 const { estimateRoute } = require('./cities');
+const { normalizePhone } = require('./sms');
 
 const db = openDb();
 const hash = hashPassword('password123');
@@ -34,8 +35,24 @@ transaction(db, () => {
       VALUES (?, ?, ?, ?, ?, ?, ?)`).run(name, email, phone, hash, type, gender, org).lastInsertRowid);
   }
   db.prepare(`UPDATE users SET role = 'admin' WHERE email = 'admin@example.com'`).run();
-  db.prepare(`UPDATE users SET verification_status = 'verified', verification_doc_type = 'employee_card'
-    WHERE email IN ('ahmed@example.com', 'sara@example.com')`).run();
+  // Demo accounts are already through onboarding: phone verified, ID checked, Rs 1,000 in the wallet.
+  let cnic = 3520210000001;
+  for (const [, email, phone] of users) {
+    db.prepare(`UPDATE users SET phone_verified = 1, verified_phone = ?, verification_status = 'verified',
+      verification_doc_type = 'cnic', cnic = COALESCE(cnic, ?), wallet_balance = 1000 WHERE email = ?`)
+      .run(normalizePhone(phone), String(cnic++), email);
+  }
+  db.prepare(`UPDATE users SET student_status = 'verified' WHERE email = 'ayesha@example.com'`).run();
+  const vehicles = [
+    ['ahmed@example.com', 'Honda', 'Civic', 2020, 'White', 'LEB-4521', 4],
+    ['sara@example.com', 'Toyota', 'Corolla', 2018, 'Grey', 'ICT-7788', 4],
+    ['bilal@example.com', 'Suzuki', 'Cultus', 2017, 'Red', 'KHI-3302', 4],
+  ];
+  for (const [email, ...v] of vehicles) {
+    db.prepare(`UPDATE users SET driver_status = 'approved', licence_number = 'DEMO-LICENCE' WHERE email = ?`).run(email);
+    db.prepare(`INSERT OR REPLACE INTO vehicles (user_id, make, model, year, color, plate, seats) VALUES (?, ?, ?, ?, ?, ?, ?)`)
+      .run(ids[email], ...v);
+  }
 
   const rides = [
     ['ahmed@example.com', 'Lahore', 'Islamabad', 'Thokar Niaz Baig', 'Faizabad', at(1, 7), 3, 2500, 20, 0, 1, 'Honda Civic (white)', 'Weekly office commute, AC car, no smoking.', 'cash,jazzcash', 'JazzCash 0300 1234567 (Ahmed Raza)'],

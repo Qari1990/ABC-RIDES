@@ -21,6 +21,15 @@ CREATE TABLE IF NOT EXISTS users (
   verification_note TEXT,
   emergency_name  TEXT,
   emergency_phone TEXT,
+  phone_verified  INTEGER NOT NULL DEFAULT 0,
+  verified_phone  TEXT,
+  cnic            TEXT,
+  student_status  TEXT NOT NULL DEFAULT 'none',
+  driver_status   TEXT NOT NULL DEFAULT 'none',
+  driver_note     TEXT,
+  licence_number  TEXT,
+  reliability     INTEGER NOT NULL DEFAULT 100,
+  wallet_balance  INTEGER NOT NULL DEFAULT 0,
   created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
@@ -61,6 +70,9 @@ CREATE TABLE IF NOT EXISTS bookings (
   price_per_seat  INTEGER NOT NULL,
   status          TEXT NOT NULL CHECK (status IN ('pending', 'confirmed', 'rejected', 'cancelled')),
   message         TEXT,
+  driver_fee      INTEGER NOT NULL DEFAULT 0,
+  passenger_fee   INTEGER NOT NULL DEFAULT 0,
+  confirmed_at    TEXT,
   created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 CREATE INDEX IF NOT EXISTS bookings_ride ON bookings (ride_id);
@@ -124,6 +136,75 @@ CREATE TABLE IF NOT EXISTS reports (
   resolution        TEXT,
   created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
+
+-- Photos uploaded during onboarding (CNIC, selfie, licence, vehicle...).
+CREATE TABLE IF NOT EXISTS documents (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id     INTEGER NOT NULL REFERENCES users(id),
+  kind        TEXT NOT NULL,
+  file        TEXT NOT NULL,
+  created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+CREATE INDEX IF NOT EXISTS documents_user ON documents (user_id, kind);
+
+CREATE TABLE IF NOT EXISTS vehicles (
+  user_id     INTEGER PRIMARY KEY REFERENCES users(id),
+  make        TEXT NOT NULL,
+  model       TEXT NOT NULL,
+  year        INTEGER NOT NULL,
+  color       TEXT NOT NULL,
+  plate       TEXT NOT NULL,
+  seats       INTEGER NOT NULL,
+  updated_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+CREATE TABLE IF NOT EXISTS phone_codes (
+  user_id       INTEGER PRIMARY KEY REFERENCES users(id),
+  code_hash     TEXT NOT NULL,
+  expires_at    TEXT NOT NULL,
+  attempts      INTEGER NOT NULL DEFAULT 0,
+  sent_at       TEXT NOT NULL,
+  window_start  TEXT NOT NULL,
+  sent_count    INTEGER NOT NULL DEFAULT 1
+);
+
+-- Admin-controlled policy (fees, booking mode, onboarding requirements).
+CREATE TABLE IF NOT EXISTS settings (
+  key    TEXT PRIMARY KEY,
+  value  TEXT NOT NULL
+);
+
+-- Every change to a wallet balance, newest last. amount is negative for charges.
+CREATE TABLE IF NOT EXISTS wallet_transactions (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id        INTEGER NOT NULL REFERENCES users(id),
+  amount         INTEGER NOT NULL,
+  type           TEXT NOT NULL CHECK (type IN ('topup', 'commission', 'fee', 'refund', 'adjustment')),
+  booking_id     INTEGER REFERENCES bookings(id),
+  ride_id        INTEGER REFERENCES rides(id),
+  note           TEXT,
+  balance_after  INTEGER NOT NULL,
+  created_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+CREATE INDEX IF NOT EXISTS wallet_transactions_user ON wallet_transactions (user_id, id);
+
+CREATE TABLE IF NOT EXISTS topup_requests (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id      INTEGER NOT NULL REFERENCES users(id),
+  amount       INTEGER NOT NULL CHECK (amount > 0),
+  method       TEXT NOT NULL,
+  reference    TEXT NOT NULL UNIQUE COLLATE NOCASE,
+  status       TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'rejected')),
+  note         TEXT,
+  created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  reviewed_at  TEXT
+);
+`;
+
+// Indexes on columns that older databases only get from migrate().
+const POST_MIGRATE = `
+CREATE UNIQUE INDEX IF NOT EXISTS users_cnic ON users (cnic) WHERE cnic IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS users_verified_phone ON users (verified_phone) WHERE verified_phone IS NOT NULL;
 `;
 
 // Columns added after the first release. CREATE TABLE IF NOT EXISTS leaves
@@ -138,6 +219,20 @@ const ADDED_COLUMNS = {
     verification_note: 'TEXT',
     emergency_name: 'TEXT',
     emergency_phone: 'TEXT',
+    phone_verified: 'INTEGER NOT NULL DEFAULT 0',
+    verified_phone: 'TEXT',
+    cnic: 'TEXT',
+    student_status: `TEXT NOT NULL DEFAULT 'none'`,
+    driver_status: `TEXT NOT NULL DEFAULT 'none'`,
+    driver_note: 'TEXT',
+    licence_number: 'TEXT',
+    reliability: 'INTEGER NOT NULL DEFAULT 100',
+    wallet_balance: 'INTEGER NOT NULL DEFAULT 0',
+  },
+  bookings: {
+    driver_fee: 'INTEGER NOT NULL DEFAULT 0',
+    passenger_fee: 'INTEGER NOT NULL DEFAULT 0',
+    confirmed_at: 'TEXT',
   },
   rides: {
     payment_methods: `TEXT NOT NULL DEFAULT 'cash'`,
@@ -161,6 +256,7 @@ function openDb(file = process.env.DB_FILE || path.join(__dirname, '..', 'data',
   db.exec('PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;');
   db.exec(SCHEMA);
   migrate(db);
+  db.exec(POST_MIGRATE);
   return db;
 }
 

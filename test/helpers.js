@@ -4,10 +4,23 @@ const os = require('node:os');
 const path = require('node:path');
 const { openDb } = require('../server/db');
 const { createApp } = require('../server/app');
+const { setSettings } = require('../server/settings');
+
+// The original tests predate onboarding checks and fees, so by default the
+// test server switches those off; tests for them turn them back on.
+const RELAXED = {
+  require_phone_verification: false,
+  require_driver_approval: false,
+  student_price_requires_verification: false,
+  driver_commission_pct: 0,
+  passenger_commission_pct: 0,
+};
 
 // Starts the app on a random port with an in-memory database.
-async function startServer() {
+async function startServer({ settings = RELAXED } = {}) {
+  process.env.SIGNUP_LIMIT_PER_HOUR = '100000';
   const db = openDb(':memory:');
+  setSettings(db, settings);
   const uploadDir = fs.mkdtempSync(path.join(os.tmpdir(), 'abc-rides-'));
   const server = createApp(db, { uploadDir }).listen(0);
   await new Promise((r) => server.once('listening', r));

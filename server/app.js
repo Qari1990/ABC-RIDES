@@ -7,12 +7,19 @@ const ridesRouter = require('./routes/rides');
 const requestsRouter = require('./routes/requests');
 const messagesRouter = require('./routes/messages');
 const adminRouter = require('./routes/admin');
+const onboardingRouter = require('./routes/onboarding');
+const walletRouter = require('./routes/wallet');
+const { securityHeaders } = require('./security');
 
-const LARGE_BODY_PATHS = new Set(['/api/me/verification']);
+// Photo uploads parse their own, larger bodies.
+const LARGE_BODY_PATHS = new Set(['/api/me/verification', '/api/me/driver']);
 
 function createApp(db, { uploadDir = process.env.UPLOAD_DIR || path.join(__dirname, '..', 'data', 'uploads') } = {}) {
   const app = express();
   app.disable('x-powered-by');
+  // Behind Render's (or any) proxy, use the client's address for rate limits.
+  app.set('trust proxy', 1);
+  app.use(securityHeaders);
   const json = express.json({ limit: '100kb' });
   // Document uploads parse their own (larger) body.
   app.use((req, res, next) => (LARGE_BODY_PATHS.has(req.path) ? next() : json(req, res, next)));
@@ -22,7 +29,9 @@ function createApp(db, { uploadDir = process.env.UPLOAD_DIR || path.join(__dirna
   api.get('/health', (_req, res) => res.json({ ok: true }));
   api.get('/cities', (_req, res) => res.json(CITIES));
   api.get('/route-estimate', (req, res) => res.json(estimateRoute(req.query.from, req.query.to)));
-  api.use(usersRouter(db, { uploadDir }));
+  api.use(usersRouter(db));
+  api.use(onboardingRouter(db, { uploadDir }));
+  api.use(walletRouter(db));
   api.use(ridesRouter(db));
   api.use(requestsRouter(db));
   api.use(messagesRouter(db));
@@ -37,7 +46,8 @@ function createApp(db, { uploadDir = process.env.UPLOAD_DIR || path.join(__dirna
     if (err.type === 'entity.too.large') return res.status(413).json({ error: 'Upload is too large' });
     const status = err.status || 500;
     if (status >= 500) console.error(err);
-    res.status(status).json({ error: status >= 500 ? 'Something went wrong' : err.message });
+    if (err.retryAfter) res.set('retry-after', String(err.retryAfter));
+    res.status(status).json({ error: status >= 500 ? 'Something went wrong' : err.message, ...(err.code && status < 500 ? { code: err.code } : {}) });
   });
 
   return app;

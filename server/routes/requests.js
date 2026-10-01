@@ -2,6 +2,8 @@ const express = require('express');
 const { requireUser } = require('../auth');
 const { HttpError, bad, str, int, isoDate } = require('../errors');
 const { publicUser } = require('./users');
+const { getSettings } = require('../settings');
+const { requirePhone } = require('../policy');
 
 // "I need a ride" posts. Drivers browse them, and passengers are notified
 // when a matching ride is offered (see POST /rides).
@@ -23,6 +25,7 @@ module.exports = function requestsRouter(db) {
   });
 
   router.post('/ride-requests', requireUser, (req, res) => {
+    requirePhone(getSettings(db), req.user);
     const b = req.body || {};
     const from = str(b.from_city, 'From city', { required: true, max: 60 });
     const to = str(b.to_city, 'To city', { required: true, max: 60 });

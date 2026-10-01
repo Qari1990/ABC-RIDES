@@ -8,6 +8,8 @@ const store = {
 };
 let me = null;
 let cities = [];
+// Admin policy: fees, booking mode, onboarding requirements (GET /api/settings).
+let settings = {};
 let unread = { notifications: 0, messages: 0 };
 // Timers belonging to the current page (e.g. chat polling); cleared on navigation.
 let pageTimers = [];
@@ -25,6 +27,7 @@ async function api(path, { method = 'GET', body } = {}) {
   if (!res.ok) {
     const err = new Error((data && data.error) || `Request failed (${res.status})`);
     err.status = res.status;
+    err.code = data && data.code;
     throw err;
   }
   return data;
@@ -93,7 +96,7 @@ function onSubmit(form, handler) {
     e.preventDefault();
     const btn = form.querySelector('[type=submit]');
     if (btn) btn.disabled = true;
-    try { await handler(formData(form), form); } catch (err) { toast(err.message, true); } finally { if (btn) btn.disabled = false; }
+    try { await handler(formData(form), form); } catch (err) { handleError(err); } finally { if (btn) btn.disabled = false; }
   });
 }
 
@@ -103,8 +106,18 @@ function onClick(el, handler) {
     if (!target) return;
     e.preventDefault();
     target.disabled = true;
-    try { await handler(target.dataset.action, target.dataset, target); } catch (err) { toast(err.message, true); } finally { target.disabled = false; }
+    try { await handler(target.dataset.action, target.dataset, target); } catch (err) { handleError(err); } finally { target.disabled = false; }
   });
+}
+
+// Shows the error and, when a setup step is missing, takes the user to it.
+const SETUP_STEP = {
+  phone_unverified: '/verify-phone', id_required: '/verify-id', driver_required: '/driver', insufficient_balance: '/wallet',
+};
+function handleError(err) {
+  toast(err.message, true);
+  const step = SETUP_STEP[err.code];
+  if (step) setTimeout(() => { location.hash = `#${step}?next=${encodeURIComponent(location.hash.slice(1))}`; }, 1500);
 }
 
 function requireLogin() {
@@ -124,6 +137,54 @@ async function imageToDataUrl(file) {
   return canvas.toDataURL('image/jpeg', 0.85);
 }
 
+// A photo picker with a preview. bindPhotos collects the chosen photos (resized) by field name.
+function photoField(name, label, { hint = 'Tap to take or choose a photo', capture = '' } = {}) {
+  return `
+    <div class="field photo-field">
+      <span class="label">${label}</span>
+      <label class="photo-drop">
+        <input type="file" accept="image/*" name="${name}" ${capture ? `capture="${capture}"` : ''} hidden>
+        <img alt="" hidden>
+        <span>📷 ${hint}</span>
+      </label>
+    </div>`;
+}
+
+function bindPhotos(form) {
+  const photos = {};
+  form.querySelectorAll('.photo-field input[type=file]').forEach((input) => {
+    input.addEventListener('change', async () => {
+      const file = input.files[0];
+      if (!file) return;
+      try {
+        photos[input.name] = await imageToDataUrl(file);
+        const box = input.parentElement;
+        box.querySelector('img').src = photos[input.name];
+        box.querySelector('img').hidden = false;
+        box.querySelector('span').textContent = '✔ Tap to change';
+      } catch {
+        toast('Could not read that photo. Please try another one.', true);
+      }
+    });
+  });
+  return photos;
+}
+
+function requirePhotos(photos, names) {
+  const labels = { cnic_front: 'CNIC front', cnic_back: 'CNIC back', selfie: 'selfie', licence_photo: 'driving licence',
+    vehicle_photo: 'vehicle photo', registration_photo: 'registration (vehicle book)', student_card: 'student card' };
+  const missing = names.filter((n) => !photos[n]);
+  if (missing.length) throw new Error(`Please add a photo of your ${missing.map((n) => labels[n] || n).join(', ')}`);
+}
+
+// 3520212345671 -> 35202-1234567-1 as the user types.
+function formatCnicInput(input) {
+  input.addEventListener('input', () => {
+    const d = input.value.replace(/\D/g, '').slice(0, 13);
+    input.value = [d.slice(0, 5), d.slice(5, 12), d.slice(12)].filter(Boolean).join('-');
+  });
+}
+
 function shareText(text) {
   if (nativeApp && nativeApp.share) { nativeApp.share(text); return; }
   if (navigator.share) { navigator.share({ text }).catch(() => {}); return; }
@@ -132,7 +193,10 @@ function shareText(text) {
 
 // ---- Components -------------------------------------------------------------
 
-const verifiedBadge = (u) => (u.verified ? ' <span class="verified" title="ID verified">✔ Verified</span>' : '');
+const verifiedBadge = (u) => (u.verified ? ' <span class="verified" title="ID verified">✔ Verified</span>' : '')
+  + (u.approved_driver ? ' <span class="verified" title="Licence and vehicle checked">🚗 Approved driver</span>' : '')
+  + (u.student_verified ? ' <span class="verified" title="Student card checked">🎓</span>' : '');
+const reliabilityText = (u) => (u.reliability != null ? ` · <span title="Drops when trips are cancelled">${u.reliability}% reliable</span>` : '');
 
 function rideCard(r) {
   const showStudent = r.student_discount_pct > 0;
@@ -183,7 +247,7 @@ function personRow(u, extra = '') {
     <div>
       <div><b>${esc(u.name)}</b>${verifiedBadge(u)}</div>
       <div class="muted small">${esc(TYPE_LABEL[u.traveler_type] || '')}${u.organization ? ` · ${esc(u.organization)}` : ''}</div>
-      <div class="small">${u.rating_avg ? `<span class="stars">${stars(u.rating_avg)}</span> ${u.rating_avg} (${u.rating_count})` : '<span class="muted">No reviews yet</span>'}${extra}</div>
+      <div class="small">${u.rating_avg ? `<span class="stars">${stars(u.rating_avg)}</span> ${u.rating_avg} (${u.rating_count})` : '<span class="muted">No reviews yet</span>'}${reliabilityText(u)}${extra}</div>
     </div>
   </a>`;
 }
@@ -316,7 +380,7 @@ function sosPanel(r) {
 }
 
 views.ride = async (page, _q, id) => {
-  const r = await api(`/rides/${id}`);
+  const [r] = await Promise.all([api(`/rides/${id}`), refreshMe()]);
   const isDriver = me && me.id === r.driver.id;
   const b = r.my_booking;
   const activeBooking = b && ['pending', 'confirmed'].includes(b.status);
@@ -329,7 +393,7 @@ views.ride = async (page, _q, id) => {
       <div class="list-row">
         <div>
           <b><a href="#/user/${x.passenger_id}">${esc(x.passenger_name)}</a></b>
-          <span class="muted small">· ${esc(TYPE_LABEL[x.passenger_type])} · ${x.seats} seat(s) · ${money(x.price_per_seat * x.seats)}</span>
+          <span class="muted small">· ${esc(TYPE_LABEL[x.passenger_type])} · ${x.passenger_reliability}% reliable · ${x.seats} seat(s) · ${money(x.price_per_seat * x.seats)}</span>
           ${x.message ? `<div class="small">“${esc(x.message)}”</div>` : ''}
           ${x.passenger_phone ? `<div class="small">📞 <a href="tel:${esc(x.passenger_phone)}">${esc(x.passenger_phone)}</a></div>` : ''}
         </div>
@@ -337,7 +401,7 @@ views.ride = async (page, _q, id) => {
           <span class="badge ${x.status}">${x.status}</span>
           ${['pending', 'confirmed'].includes(x.status) ? `<a class="btn small ghost" href="#/chat/${x.id}">💬 Chat</a>` : ''}
           ${x.status === 'pending' && r.status === 'scheduled' ? `
-            <button class="btn small" data-action="confirm" data-id="${x.id}">Accept</button>
+            <button class="btn small" data-action="confirm" data-id="${x.id}">Accept${x.driver_fee_preview ? ` · fee ${money(x.driver_fee_preview)}` : ''}</button>
             <button class="btn small ghost" data-action="reject" data-id="${x.id}">Decline</button>` : ''}
         </div>
       </div>`).join('');
@@ -359,7 +423,7 @@ views.ride = async (page, _q, id) => {
           <div class="field"><label>Payment methods</label>${paymentCheckboxes(r.payment_methods)}</div>
           <div class="field"><label>Payment account details</label><input name="payment_details" value="${esc(r.payment_details)}" placeholder="e.g. JazzCash 0300 1234567 (Ahmed Raza)"></div>
           <div class="field"><label>Notes</label><textarea name="notes" maxlength="500">${esc(r.notes)}</textarea></div>
-          <label class="check"><input type="checkbox" name="instant_book" value="1" ${r.instant_book ? 'checked' : ''}> Instant booking</label>
+          ${settings.booking_mode === 'driver_choice' ? `<label class="check"><input type="checkbox" name="instant_book" value="1" ${r.instant_book ? 'checked' : ''}> Instant booking</label>` : ''}
           <button class="btn" type="submit">Save changes</button>
         </form>
       </details>
@@ -375,6 +439,8 @@ views.ride = async (page, _q, id) => {
         ${b.status === 'pending' ? '<p class="muted small">The driver will accept or decline your request soon. You’ll get a notification.</p>' : ''}
         ${r.driver.phone ? `<p>📞 Driver: <a href="tel:${esc(r.driver.phone)}">${esc(r.driver.phone)}</a></p>` : ''}
         ${r.payment_details ? `<p>💳 Pay to: <b>${esc(r.payment_details)}</b></p>` : ''}
+        ${r.vehicle_plate ? `<p class="plate-note">🚘 Car: <b>${esc(r.vehicle || '')}</b>, plate <b class="plate">${esc(r.vehicle_plate)}</b>. Check the plate before you get in.</p>` : ''}
+        ${b.passenger_fee ? `<p class="muted small">Booking fee paid: ${money(b.passenger_fee)}</p>` : ''}
         <div class="actions">
           <a class="btn" href="#/chat/${b.id}">💬 Message driver</a>
           ${r.status === 'scheduled' ? `<button class="btn ghost" data-action="cancel-booking" data-id="${b.id}">Cancel booking</button>` : ''}
@@ -389,8 +455,11 @@ views.ride = async (page, _q, id) => {
           <div class="field"><label>Price per seat</label><input value="${money(r.your_price)}" disabled></div>
         </div>
         <div class="field"><label for="bmsg">Message to driver (optional)</label><textarea id="bmsg" name="message" maxlength="300" placeholder="e.g. I’ll have one small bag. Can you pick me up near Kalma Chowk?"></textarea></div>
+        <div class="fee-box" id="fee-box"></div>
         <button class="btn block" type="submit">${r.instant_book ? 'Book now' : 'Request to book'}</button>
-        ${me && me.traveler_type !== 'student' && r.student_discount_pct ? `<p class="muted small" style="margin-top:8px">Students pay ${money(r.student_price)} on this ride.</p>` : ''}
+        ${me && me.traveler_type === 'student' && !me.student_verified && settings.student_price_requires_verification && r.student_discount_pct
+    ? `<p class="small" style="margin-top:8px">🎓 Students pay ${money(r.student_price)}. <a href="#/verify-id">Verify your student card</a> to get this price.</p>`
+    : me && me.traveler_type !== 'student' && r.student_discount_pct ? `<p class="muted small" style="margin-top:8px">Students pay ${money(r.student_price)} on this ride.</p>` : ''}
       </form>`;
   } else if (r.status === 'scheduled' && !departed) {
     bookingSection = '<div class="card empty">This ride is full.</div>';
@@ -446,7 +515,24 @@ views.ride = async (page, _q, id) => {
     ${reviewSection}`;
 
   const book = $('#book', page);
+  // The booking fee depends on the seats chosen; show it before the passenger commits.
+  const showFee = () => {
+    const f = r.booking_fee;
+    if (!book || !f) return;
+    const fare = f.per_seat_fare * Number(book.seats.value);
+    const fee = (f.free ? 0 : Math.ceil((fare * f.pct) / 100)) + f.low_reliability_fee;
+    const lines = [`You pay the driver <b>${money(fare)}</b> directly.`];
+    if (fee) {
+      lines.push(`Booking fee <b>${money(fee)}</b>${f.free ? '' : ` (${f.pct}%)`}${f.low_reliability_fee ? `, incl. ${money(f.low_reliability_fee)} low-reliability fee` : ''}, taken from your wallet when the booking is confirmed.`);
+      lines.push(`Wallet: ${money(me.wallet_balance)}${me.wallet_balance < fee ? ' · <a href="#/wallet">Top up</a>' : ''}`);
+    } else if (f.free) {
+      lines.push(`No booking fee: ${me.free_confirmations_left} free booking(s) left.`);
+    }
+    $('#fee-box', page).innerHTML = lines.map((l) => `<div class="small">${l}</div>`).join('');
+  };
   if (book) {
+    book.seats.addEventListener('change', showFee);
+    showFee();
     onSubmit(book, async (d) => {
       const res = await api(`/rides/${r.id}/bookings`, { method: 'POST', body: { seats: Number(d.seats), message: d.message } });
       toast(res.status === 'confirmed' ? 'Booked! Your seat is confirmed.' : 'Request sent to the driver.');
@@ -514,6 +600,19 @@ function currentLocationLink() {
 
 views.offer = async (page, q) => {
   if (!requireLogin()) return;
+  await refreshMe();
+  // Drivers need a verified phone and (if the admin requires it) an approved driver registration.
+  if (settings.require_phone_verification && !me.phone_verified) {
+    page.innerHTML = setupNeeded('Verify your phone first', 'Posting rides needs a verified phone number. It takes a minute.', '/verify-phone?next=/offer', 'Verify phone');
+    return;
+  }
+  if (settings.require_driver_approval && me.driver_status !== 'approved') {
+    page.innerHTML = me.driver_status === 'pending'
+      ? setupNeeded('Driver registration under review ⏳', 'We are checking your licence and vehicle. You’ll get a notification as soon as you can post rides.', '/driver', 'View my application')
+      : setupNeeded('Become a driver', 'To keep passengers safe, drivers register once with their CNIC, driving licence and vehicle. It takes about 3 minutes.', '/driver', 'Register as a driver');
+    return;
+  }
+  const postingFee = me.reliability < settings.reliability_threshold ? settings.low_reliability_fee : 0;
   const start = q.date ? new Date(`${q.date}T08:00`) : new Date(Date.now() + 864e5);
   if (!q.date) start.setHours(8, 0, 0, 0);
   const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -521,6 +620,8 @@ views.offer = async (page, q) => {
     <h1>Offer a ride</h1>
     <p class="muted">Going between cities anyway? Fill your empty seats and share fuel and toll costs.
       See <a href="#/requests">passengers looking for rides</a>.</p>
+    ${postingFee ? `<div class="card warn">⚠️ Your reliability is ${me.reliability}% (below ${settings.reliability_threshold}%), so each ride you post costs ${money(postingFee)} from your wallet (balance ${money(me.wallet_balance)}). Complete trips without cancelling to earn points back.</div>`
+    : '<p class="small">✅ Posting rides is free.</p>'}
     <form id="offer" class="card">
       ${cityOptions()}
       <div class="row two">
@@ -533,12 +634,12 @@ views.offer = async (page, q) => {
       </div>
       <div class="row three">
         <div class="field"><label for="ow">Departure</label><input id="ow" name="departure_at" type="datetime-local" value="${localInputValue(start)}" required></div>
-        <div class="field"><label for="os">Seats</label><input id="os" name="seats_total" type="number" min="1" max="8" value="3" required></div>
+        <div class="field"><label for="os">Seats</label><input id="os" name="seats_total" type="number" min="1" max="${me.vehicle ? me.vehicle.seats : 8}" value="${Math.min(3, me.vehicle ? me.vehicle.seats : 3)}" required></div>
         <div class="field"><label for="opr">Price per seat (Rs)</label><input id="opr" name="price_per_seat" type="number" min="0" step="50" value="2000" required></div>
       </div>
       ${durationFields(null)}
       <div class="row two">
-        <div class="field"><label for="ov">Vehicle</label><input id="ov" name="vehicle" placeholder="e.g. Toyota Corolla, white"></div>
+        <div class="field"><label for="ov">Vehicle</label><input id="ov" name="vehicle" placeholder="${me.vehicle ? esc(`${me.vehicle.make} ${me.vehicle.model} (${me.vehicle.color})`) : 'e.g. Toyota Corolla, white'}"></div>
         <div class="field"><label for="osd">Student discount (%)</label><input id="osd" name="student_discount_pct" type="number" min="0" max="100" value="0"></div>
       </div>
       <div class="field"><label>Accepted payment</label>${paymentCheckboxes()}</div>
@@ -551,7 +652,8 @@ views.offer = async (page, q) => {
         <div class="field"><label for="oweeks">For how many weeks</label><select id="oweeks" name="weeks">${[1, 2, 3, 4].map((n) => `<option>${n}</option>`).join('')}</select></div>
       </fieldset>
       <div class="field"><label for="on">Notes</label><textarea id="on" name="notes" maxlength="500" placeholder="Luggage space, AC, music, smoking rules, stops on the way…"></textarea></div>
-      <label class="check"><input type="checkbox" name="instant_book" value="1"> Instant booking (accept passengers automatically)</label>
+      ${settings.booking_mode === 'driver_choice' ? '<label class="check"><input type="checkbox" name="instant_book" value="1"> Instant booking (accept passengers automatically)</label>'
+    : `<p class="muted small">${settings.booking_mode === 'instant' ? 'Bookings are confirmed instantly.' : 'You approve each booking request.'}</p>`}
       ${me.gender === 'female' ? '<label class="check"><input type="checkbox" name="women_only" value="1"> Women-only ride</label>' : ''}
       <button class="btn block" type="submit">Publish ride</button>
     </form>`;
@@ -848,31 +950,271 @@ views.register = async (page, q) => {
   onSubmit($('#register', page), async (d) => {
     const res = await api('/auth/register', { method: 'POST', body: d });
     store.token = res.token; me = res.user;
-    toast(`Welcome, ${me.name.split(' ')[0]}! Verify your ID from your profile to build trust.`);
-    location.hash = `#${q.next || '/'}`;
+    toast(`Welcome, ${me.name.split(' ')[0]}! Let’s verify your phone.`);
+    location.hash = `#/verify-phone?next=${encodeURIComponent(q.next || '/')}`;
   });
 };
 
-function verificationCard(u) {
-  const status = u.verification_status;
-  if (status === 'verified') {
-    return `<div class="card"><h3>✔ Verified</h3><p class="muted small">Your ${esc(DOC_LABEL[u.verification_doc_type])} was checked. Others see a verified badge on your profile.</p></div>`;
-  }
-  if (status === 'pending') {
-    return `<div class="card"><h3>Verification under review ⏳</h3><p class="muted small">We’re checking your ${esc(DOC_LABEL[u.verification_doc_type])}. You’ll get a notification.</p></div>`;
-  }
-  return `
-    <form id="verify" class="card">
-      <h3>Get verified</h3>
-      <p class="muted small">Upload a photo of your CNIC, student card or employee card. Verified members get more bookings. Only our team sees the photo.</p>
-      ${status === 'rejected' ? `<p class="small" style="color:var(--danger)">Last upload was not approved${u.verification_note ? `: ${esc(u.verification_note)}` : ''}.</p>` : ''}
-      <div class="field"><label>Document</label><select name="doc_type">
-        ${Object.entries(DOC_LABEL).map(([k, v]) => `<option value="${k}" ${(k === 'student_card' && u.traveler_type === 'student') || (k === 'employee_card' && u.traveler_type === 'professional') ? 'selected' : ''}>${v}</option>`).join('')}
-      </select></div>
-      <div class="field"><label>Photo</label><input type="file" name="photo" accept="image/*" required></div>
-      <button class="btn" type="submit">Upload for review</button>
-    </form>`;
+async function refreshMe() {
+  if (store.token) me = await api('/me').catch(() => me);
 }
+
+function setupNeeded(title, text, href, button) {
+  return `<div class="card empty"><h2>${title}</h2><p>${text}</p><a class="btn" href="#${href}">${button}</a></div>`;
+}
+
+const STATUS_ICON = { verified: '✅', approved: '✅', pending: '⏳', rejected: '⚠️', none: '➕' };
+
+// Profile checklist: what is done and what is next, with as few steps as possible.
+function setupChecklist(u) {
+  const row = (done, title, sub, href, cta) => `
+    <a class="list-row setup-row" href="#${href}">
+      <span>${done} <b>${title}</b><br><span class="muted small">${sub}</span></span>
+      ${cta ? `<span class="btn small ${done === '✅' ? 'ghost' : ''}">${cta}</span>` : ''}
+    </a>`;
+  const idStatus = u.verification_status;
+  const rows = [
+    row(u.phone_verified ? '✅' : '➕', 'Phone number', u.phone_verified ? esc(u.phone) : 'Needed to book and post rides', '/verify-phone', u.phone_verified ? '' : 'Verify'),
+    row(STATUS_ICON[idStatus], 'Identity (CNIC + selfie)',
+      { verified: `Verified · ${esc(u.cnic_masked || '')}`, pending: 'Under review', rejected: `Not approved${u.verification_note ? `: ${esc(u.verification_note)}` : ''}`, none: 'Get a verified badge and more bookings' }[idStatus],
+      '/verify-id', idStatus === 'verified' || idStatus === 'pending' ? '' : 'Verify'),
+  ];
+  if (u.traveler_type === 'student') {
+    rows.push(row(STATUS_ICON[u.student_status], 'Student card',
+      { verified: 'Student prices unlocked', pending: 'Under review', rejected: 'Not approved, please try again', none: 'Unlock student discounts' }[u.student_status],
+      '/verify-id', ['verified', 'pending'].includes(u.student_status) ? '' : 'Add'));
+  }
+  rows.push(row(STATUS_ICON[u.driver_status], 'Driver & vehicle',
+    { approved: u.vehicle ? `${esc(u.vehicle.make)} ${esc(u.vehicle.model)} · ${esc(u.vehicle.plate)}` : 'Approved', pending: 'Under review',
+      rejected: `Not approved${u.driver_note ? `: ${esc(u.driver_note)}` : ''}`, none: 'Optional: offer rides and earn' }[u.driver_status],
+    '/driver', u.driver_status === 'approved' || u.driver_status === 'pending' ? '' : 'Start'));
+  return `
+    <div class="card">
+      <h3>Account setup</h3>
+      ${rows.join('')}
+      <a class="list-row setup-row" href="#/wallet">
+        <span>💳 <b>Wallet ${money(u.wallet_balance)}</b><br><span class="muted small">Reliability ${u.reliability}% · ${u.free_confirmations_left} free booking(s) left</span></span>
+        <span class="btn small ghost">Open</span>
+      </a>
+    </div>`;
+}
+
+views['verify-phone'] = async (page, q) => {
+  if (!requireLogin()) return;
+  await refreshMe();
+  const next = q.next || '/profile';
+  if (me.phone_verified) {
+    page.innerHTML = setupNeeded('Phone verified ✅', `${esc(me.phone)} is verified.`, next, 'Continue');
+    return;
+  }
+  page.innerHTML = `
+    <h1>Verify your phone</h1>
+    <p class="muted">We’ll send a 6-digit code by SMS to <b>${esc(me.phone)}</b>. <a href="#/profile">Wrong number?</a></p>
+    <div id="dev-code"></div>
+    <form id="otp" class="card">
+      <div class="field"><label for="code">Code</label>
+        <input id="code" name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" placeholder="••••••" required class="otp"></div>
+      <button class="btn block" type="submit">Verify</button>
+      <button class="btn ghost block" type="button" data-action="resend" style="margin-top:8px">Send code</button>
+    </form>`;
+  const resend = page.querySelector('[data-action=resend]');
+  let timer;
+  const send = async () => {
+    const res = await api('/me/phone/send-code', { method: 'POST' });
+    if (res.dev_code) {
+      $('#dev-code', page).innerHTML = `<div class="card warn small">Development mode (no SMS provider set up): your code is <b>${res.dev_code}</b>.</div>`;
+      page.querySelector('#code').value = res.dev_code;
+    } else {
+      toast(`Code sent to ${res.sent_to}`);
+    }
+    let left = 60;
+    resend.disabled = true;
+    clearInterval(timer);
+    timer = setInterval(() => {
+      left -= 1;
+      resend.textContent = left > 0 ? `Resend code in ${left}s` : 'Resend code';
+      if (left <= 0) { clearInterval(timer); resend.disabled = false; }
+    }, 1000);
+    pageTimers.push(timer);
+  };
+  onClick(page, async (action) => { if (action === 'resend') await send(); });
+  onSubmit($('#otp', page), async (d) => {
+    me = await api('/me/phone/verify', { method: 'POST', body: { code: d.code } });
+    toast('Phone verified ✅');
+    location.hash = `#${next}`;
+  });
+  send().catch(handleError);
+};
+
+views['verify-id'] = async (page, q) => {
+  if (!requireLogin()) return;
+  await refreshMe();
+  const idDone = ['verified', 'pending'].includes(me.verification_status);
+  const wantsStudent = me.traveler_type === 'student' && !['verified', 'pending'].includes(me.student_status);
+  if (idDone && !wantsStudent) {
+    page.innerHTML = setupNeeded(me.verification_status === 'verified' ? 'Identity verified ✅' : 'Under review ⏳',
+      me.verification_status === 'verified' ? 'Your CNIC and selfie were checked.' : 'We’re checking your documents. You’ll get a notification, usually within a few hours.',
+      q.next || '/profile', 'Done');
+    return;
+  }
+  page.innerHTML = `
+    <h1>${idDone ? 'Add your student card' : 'Verify your identity'}</h1>
+    <p class="muted">Takes 2 minutes. Only the ABC Rides team sees these photos; other members just see a ✔ Verified badge.</p>
+    <form id="idv" class="card">
+      ${idDone ? '' : `
+      <div class="field"><label for="cnic">CNIC number</label><input id="cnic" name="cnic_number" inputmode="numeric" placeholder="35202-1234567-1" required></div>
+      <div class="row two">
+        ${photoField('cnic_front', 'CNIC front', { capture: 'environment' })}
+        ${photoField('cnic_back', 'CNIC back', { capture: 'environment' })}
+      </div>
+      ${photoField('selfie', 'Selfie', { hint: 'Take a clear selfie, face visible', capture: 'user' })}`}
+      ${me.traveler_type === 'student' ? photoField('student_card', `Student card${idDone ? '' : ' (for student prices)'}`, { capture: 'environment' }) : ''}
+      <button class="btn block" type="submit">Submit for review</button>
+      <p class="muted small" style="margin-top:8px">🔒 One account per CNIC. Fake or someone else’s documents lead to a permanent ban.</p>
+    </form>`;
+  const form = $('#idv', page);
+  if (form.cnic_number) formatCnicInput(form.cnic_number);
+  const photos = bindPhotos(form);
+  onSubmit(form, async (d) => {
+    if (!idDone) requirePhotos(photos, ['cnic_front', 'cnic_back', 'selfie']);
+    if (idDone) requirePhotos(photos, ['student_card']);
+    me = await api('/me/verification', { method: 'POST', body: { cnic_number: d.cnic_number, ...photos } });
+    toast('Submitted! We’ll review it soon.');
+    location.hash = `#${q.next || '/profile'}`;
+  });
+};
+
+views.driver = async (page) => {
+  if (!requireLogin()) return;
+  await refreshMe();
+  if (me.driver_status === 'approved' || me.driver_status === 'pending') {
+    const v = me.vehicle;
+    page.innerHTML = `
+      <h1>${me.driver_status === 'approved' ? 'You’re an approved driver ✅' : 'Driver registration under review ⏳'}</h1>
+      ${v ? `<div class="card"><h3>🚗 ${esc(v.make)} ${esc(v.model)} (${v.year})</h3>
+        <div class="list-row"><span class="muted">Colour</span><span>${esc(v.color)}</span></div>
+        <div class="list-row"><span class="muted">Plate</span><b class="plate">${esc(v.plate)}</b></div>
+        <div class="list-row"><span class="muted">Passenger seats</span><span>${v.seats}</span></div></div>` : ''}
+      ${me.driver_status === 'approved' ? '<a class="btn block" href="#/offer">➕ Offer a ride</a>' : '<p class="muted">You’ll get a notification once our team has checked your documents.</p>'}`;
+    return;
+  }
+  const needId = !['verified', 'pending'].includes(me.verification_status);
+  const year = new Date().getFullYear();
+  page.innerHTML = `
+    <h1>Become a driver</h1>
+    <p class="muted">Register once, then post rides for free. We check every driver so passengers feel safe.</p>
+    ${me.driver_status === 'rejected' ? `<div class="card warn">Your last application was not approved${me.driver_note ? `: ${esc(me.driver_note)}` : ''}. Please fix it and submit again.</div>` : ''}
+    ${settings.require_phone_verification && !me.phone_verified ? setupNeeded('Step 0: verify your phone', 'Verify your phone number first.', '/verify-phone?next=/driver', 'Verify phone') : `
+    <form id="drv">
+      ${needId ? `
+      <div class="card">
+        <h3><span class="step">1</span> Your identity</h3>
+        <div class="field"><label for="cnic">CNIC number</label><input id="cnic" name="cnic_number" inputmode="numeric" placeholder="35202-1234567-1" required></div>
+        <div class="row two">
+          ${photoField('cnic_front', 'CNIC front', { capture: 'environment' })}
+          ${photoField('cnic_back', 'CNIC back', { capture: 'environment' })}
+        </div>
+        ${photoField('selfie', 'Selfie', { hint: 'Take a clear selfie, face visible', capture: 'user' })}
+      </div>` : ''}
+      <div class="card">
+        <h3><span class="step">${needId ? 2 : 1}</span> Driving licence</h3>
+        <div class="field"><label for="lic">Licence number</label><input id="lic" name="licence_number" required></div>
+        ${photoField('licence_photo', 'Licence photo', { capture: 'environment' })}
+      </div>
+      <div class="card">
+        <h3><span class="step">${needId ? 3 : 2}</span> Vehicle</h3>
+        <div class="row two">
+          <div class="field"><label>Make</label><input name="make" placeholder="Toyota" required></div>
+          <div class="field"><label>Model</label><input name="model" placeholder="Corolla" required></div>
+        </div>
+        <div class="row three">
+          <div class="field"><label>Year</label><input name="year" type="number" min="1980" max="${year + 1}" placeholder="2019" required></div>
+          <div class="field"><label>Colour</label><input name="color" placeholder="White" required></div>
+          <div class="field"><label>Passenger seats</label><input name="seats" type="number" min="1" max="8" value="4" required></div>
+        </div>
+        <div class="field"><label>Number plate</label><input name="plate" placeholder="LEA-1234" autocapitalize="characters" required></div>
+        <div class="row two">
+          ${photoField('vehicle_photo', 'Car photo (plate visible)', { capture: 'environment' })}
+          ${photoField('registration_photo', 'Registration (vehicle book)', { capture: 'environment' })}
+        </div>
+      </div>
+      <button class="btn block" type="submit">Submit for review</button>
+      <p class="muted small" style="margin-top:8px">🔒 Your documents are only seen by the ABC Rides team. Passengers see your car and, once confirmed, its plate.</p>
+    </form>`}`;
+  const form = $('#drv', page);
+  if (!form) return;
+  if (form.cnic_number) formatCnicInput(form.cnic_number);
+  const photos = bindPhotos(form);
+  onSubmit(form, async (d) => {
+    requirePhotos(photos, [...(needId ? ['cnic_front', 'cnic_back', 'selfie'] : []), 'licence_photo', 'vehicle_photo', 'registration_photo']);
+    if (needId) {
+      await api('/me/verification', { method: 'POST', body: { cnic_number: d.cnic_number, cnic_front: photos.cnic_front, cnic_back: photos.cnic_back, selfie: photos.selfie } });
+    }
+    me = await api('/me/driver', {
+      method: 'POST',
+      body: {
+        licence_number: d.licence_number, licence_photo: photos.licence_photo, vehicle_photo: photos.vehicle_photo,
+        registration_photo: photos.registration_photo,
+        vehicle: { make: d.make, model: d.model, year: Number(d.year), color: d.color, plate: d.plate, seats: Number(d.seats) },
+      },
+    });
+    toast('Submitted! We’ll review it soon.');
+    render();
+  });
+};
+
+const TXN_LABEL = { topup: 'Top-up', commission: 'Driver commission', fee: 'Fee', refund: 'Refund', adjustment: 'Adjustment' };
+
+views.wallet = async (page) => {
+  if (!requireLogin()) return;
+  const w = await api('/me/wallet');
+  const s = w.settings;
+  const meter = Math.max(0, Math.min(100, w.reliability));
+  page.innerHTML = `
+    <h1>Wallet</h1>
+    <div class="card wallet-hero">
+      <div class="small muted">Balance</div>
+      <div class="balance">${money(w.balance)}</div>
+      <div class="small">Reliability <b>${w.reliability}%</b>${w.low_reliability ? ` <span class="badge cancelled">below ${s.reliability_threshold}%</span>` : ''}</div>
+      <div class="meter"><span style="width:${meter}%" class="${w.low_reliability ? 'low' : ''}"></span><i style="left:${s.reliability_threshold}%"></i></div>
+      <div class="small muted">${w.free_confirmations_left} free booking confirmation(s) left</div>
+    </div>
+    <details class="card" ${w.balance === 0 && !w.transactions.length ? 'open' : ''}>
+      <summary><b>How fees work</b></summary>
+      <ul class="small rules">
+        <li>Posting a ride is <b>free</b>.</li>
+        <li>When a booking is confirmed, the driver pays <b>${s.driver_commission_pct}%</b> and the passenger <b>${s.passenger_commission_pct}%</b> of the fare from their wallets. Everyone’s first <b>${s.free_confirmations}</b> confirmed bookings are free.</li>
+        <li>The fare itself is paid directly to the driver (cash, JazzCash…).</li>
+        <li>Cancelling a confirmed trip costs reliability points (driver ${s.penalty_driver_cancel}, passenger ${s.penalty_passenger_cancel}; double within ${s.late_cancel_hours} hours of departure). The other side gets their fee back.</li>
+        <li>Below <b>${s.reliability_threshold}%</b> reliability, posting a ride or confirming a booking costs an extra <b>${money(s.low_reliability_fee)}</b>.</li>
+        <li>Every completed trip earns <b>+${s.reward_completed}</b> points.</li>
+      </ul>
+    </details>
+    <form id="topup" class="card">
+      <h3>Top up</h3>
+      <p class="small">1. Send money to:</p>
+      <pre class="accounts">${esc(s.topup_accounts)}</pre>
+      <p class="small">2. Enter the details from your payment receipt. We add it to your wallet after checking.</p>
+      <div class="row three">
+        <div class="field"><label>Amount (Rs)</label><input name="amount" type="number" min="${s.min_topup}" step="50" value="${Math.max(500, s.min_topup)}" required></div>
+        <div class="field"><label>Sent with</label><select name="method"><option value="jazzcash">JazzCash</option><option value="easypaisa">Easypaisa</option><option value="bank_transfer">Bank transfer</option></select></div>
+        <div class="field"><label>Transaction ID</label><input name="reference" placeholder="e.g. 0123456789" required></div>
+      </div>
+      <button class="btn block" type="submit">Submit top-up</button>
+    </form>
+    ${w.topups.length ? `<h2>Top-ups</h2><div class="card">${w.topups.map((t) => `
+      <div class="list-row"><span>${money(t.amount)} · ${esc(t.method)} · <span class="muted small">${esc(t.reference)}</span>${t.note ? `<br><span class="muted small">${esc(t.note)}</span>` : ''}</span>
+      <span class="badge ${t.status === 'approved' ? 'confirmed' : t.status === 'rejected' ? 'cancelled' : 'pending'}">${t.status}</span></div>`).join('')}</div>` : ''}
+    <h2>History</h2>
+    <div class="card">${w.transactions.map((t) => `
+      <div class="list-row"><span>${TXN_LABEL[t.type]}${t.ride_id ? ` · <a href="#/ride/${t.ride_id}">ride</a>` : ''}<br><span class="muted small">${esc(t.note || '')} · ${timeAgo(t.created_at)}</span></span>
+      <b class="${t.amount < 0 ? 'neg' : 'pos'}">${t.amount < 0 ? '−' : '+'}${money(Math.abs(t.amount))}</b></div>`).join('') || '<p class="muted">No transactions yet.</p>'}</div>`;
+  onSubmit($('#topup', page), async (d) => {
+    await api('/me/wallet/topups', { method: 'POST', body: { amount: Number(d.amount), method: d.method, reference: d.reference.trim() } });
+    toast('Top-up submitted. We’ll add it after checking the payment.');
+    render();
+  });
+};
 
 views.profile = async (page) => {
   if (!requireLogin()) return;
@@ -881,7 +1223,7 @@ views.profile = async (page) => {
     <h1>My profile</h1>
     <div class="card">${personRow(me)}<p class="muted small" style="margin-top:8px">${esc(me.email)}</p></div>
     ${me.role === 'admin' ? '<a class="btn block" href="#/admin" style="margin-bottom:12px">🛠 Admin panel</a>' : ''}
-    ${verificationCard(me)}
+    ${setupChecklist(me)}
     <form id="profile" class="card">
       <h3>Personal details</h3>
       ${profileFields(me)}
@@ -916,16 +1258,6 @@ views.profile = async (page) => {
     form.reset();
     toast('Password changed. Other devices were signed out.');
   });
-  const verify = $('#verify', page);
-  if (verify) {
-    onSubmit(verify, async (d, form) => {
-      const file = form.photo.files[0];
-      if (!file) throw new Error('Choose a photo first');
-      me = await api('/me/verification', { method: 'POST', body: { doc_type: d.doc_type, image: await imageToDataUrl(file) } });
-      toast('Uploaded! We’ll review it soon.');
-      render();
-    });
-  }
   onClick(page, async (action) => {
     if (action === 'server') nativeApp.changeServer();
     if (action === 'logout') {
@@ -978,11 +1310,11 @@ views.user = async (page, _q, id) => {
 views.admin = async (page, q) => {
   if (!requireLogin()) return;
   if (me.role !== 'admin') { page.innerHTML = '<div class="card empty">Admins only.</div>'; return; }
-  const tab = ['verify', 'reports', 'users'].includes(q.tab) ? q.tab : 'overview';
+  const tab = ['verify', 'topups', 'reports', 'users', 'settings'].includes(q.tab) ? q.tab : 'overview';
   const tabLink = (t, label) => `<a class="btn small ${tab === t ? '' : 'ghost'}" href="#/admin?tab=${t}">${label}</a>`;
   page.innerHTML = `
     <h1>Admin</h1>
-    <div class="tabs wrap">${tabLink('overview', 'Overview')}${tabLink('verify', 'Verifications')}${tabLink('reports', 'Reports')}${tabLink('users', 'Users')}</div>
+    <div class="tabs wrap">${tabLink('overview', 'Overview')}${tabLink('verify', 'Verifications')}${tabLink('topups', 'Top-ups')}${tabLink('reports', 'Reports')}${tabLink('users', 'Users')}${tabLink('settings', 'Settings')}</div>
     <div id="admin-body"><p class="muted">Loading…</p></div>`;
   const body = $('#admin-body', page);
 
@@ -991,7 +1323,12 @@ views.admin = async (page, q) => {
     const sum = (o) => Object.values(o).reduce((a, b) => a + b, 0);
     const tile = (label, value, href) => `<a class="card stat" href="${href || '#/admin'}"><b>${value}</b><span>${label}</span></a>`;
     body.innerHTML = `
+      ${s.sms_configured ? '' : `<div class="card warn small">⚠️ <b>No SMS provider is set up.</b> Phone codes are shown on screen, so phone
+        verification is not secure yet. Set <code>SMS_GATEWAY_URL</code> on the server before launch.</div>`}
       <div class="stats">
+        ${tile('Revenue (all time)', money(s.revenue))}
+        ${tile('Revenue (30 days)', money(s.revenue_30d))}
+        ${tile('Pending top-ups', s.pending_topups, '#/admin?tab=topups')}
         ${tile('Members', sum(s.users), '#/admin?tab=users')}
         ${tile('Rides scheduled', s.rides.scheduled || 0)}
         ${tile('Rides completed', s.rides.completed || 0)}
@@ -1007,27 +1344,99 @@ views.admin = async (page, q) => {
         <div class="list-row"><span>Open ride requests</span><b>${s.open_requests}</b></div>
       </div>`;
   } else if (tab === 'verify') {
+    const DOC_NAMES = { cnic_front: 'CNIC front', cnic_back: 'CNIC back', selfie: 'Selfie', student_card: 'Student card', employee_card: 'Employee card',
+      driving_license: 'Driving licence', vehicle_photo: 'Vehicle', vehicle_registration: 'Registration' };
     const users = await api('/admin/verifications');
+    const pendingList = (u) => [u.verification_status === 'pending' && 'identity', u.student_status === 'pending' && 'student card',
+      u.driver_status === 'pending' && 'driver'].filter(Boolean).join(' + ');
     body.innerHTML = users.map((u) => `
       <div class="card" data-user="${u.id}">
-        <b>${esc(u.name)}</b> <span class="muted small">${esc(u.email)} · ${esc(u.phone)} · ${esc(TYPE_LABEL[u.traveler_type])}${u.organization ? ` · ${esc(u.organization)}` : ''}</span>
-        <p class="small">Document: <b>${esc(DOC_LABEL[u.verification_doc_type])}</b></p>
-        <img class="doc" alt="Uploaded document" data-doc="${u.id}">
-        <div class="field"><input name="note" placeholder="Note to the user (if rejecting)"></div>
+        <div class="ride-top"><b>${esc(u.name)}</b><span class="badge pending">${pendingList(u)}</span></div>
+        <div class="small muted">${esc(u.email)} · ${esc(u.phone)} ${u.phone_verified ? '✅' : '(phone not verified)'} · ${esc(TYPE_LABEL[u.traveler_type])}${u.organization ? ` · ${esc(u.organization)}` : ''}</div>
+        <div class="list-row"><span class="muted">CNIC</span><b>${esc(u.cnic || '—')}</b></div>
+        ${u.licence_number ? `<div class="list-row"><span class="muted">Licence</span><b>${esc(u.licence_number)}</b></div>` : ''}
+        ${u.vehicle ? `<div class="list-row"><span class="muted">Vehicle</span><b>${esc(u.vehicle.make)} ${esc(u.vehicle.model)} ${u.vehicle.year}, ${esc(u.vehicle.color)} · ${esc(u.vehicle.plate)} · ${u.vehicle.seats} seats</b></div>` : ''}
+        <p class="small muted">Check: the selfie matches the CNIC photo, the name and CNIC number match the details above, the plate in the car photo matches the registration.</p>
+        <div class="docs">${u.documents.map((d) => `<figure><img class="doc" alt="${esc(DOC_NAMES[d.kind] || d.kind)}" data-doc="${d.id}"><figcaption>${esc(DOC_NAMES[d.kind] || d.kind)}</figcaption></figure>`).join('')}</div>
+        <div class="field"><input name="note" placeholder="Note to the user (required when rejecting)"></div>
         <div class="actions">
-          <button class="btn" data-action="approve" data-id="${u.id}">Approve</button>
+          <button class="btn" data-action="approve" data-id="${u.id}">Approve all</button>
           <button class="btn ghost" data-action="decline" data-id="${u.id}">Reject</button>
         </div>
       </div>`).join('') || '<div class="card empty">No pending verifications 🎉</div>';
     body.querySelectorAll('img[data-doc]').forEach(async (img) => {
-      const res = await fetch(`/api/admin/users/${img.dataset.doc}/document`, { headers: { authorization: `Bearer ${store.token}` } });
+      const res = await fetch(`/api/admin/documents/${img.dataset.doc}`, { headers: { authorization: `Bearer ${store.token}` } });
       if (res.ok) img.src = URL.createObjectURL(await res.blob());
     });
+    body.addEventListener('click', (e) => {
+      // Tap a document to see it full size.
+      if (e.target.matches('img.doc') && e.target.src) window.open(e.target.src, '_blank');
+    });
     onClick(body, async (action, data) => {
-      const note = body.querySelector(`[data-user="${data.id}"] input[name=note]`).value;
-      await api(`/admin/users/${data.id}/verification`, { method: 'POST', body: { approve: action === 'approve', note } });
-      toast(action === 'approve' ? 'Verified' : 'Rejected');
+      const note = body.querySelector(`[data-user="${data.id}"] input[name=note]`).value.trim();
+      if (action === 'decline' && !note) throw new Error('Please write a note telling the user what to fix');
+      await api(`/admin/users/${data.id}/review`, { method: 'POST', body: { approve: action === 'approve', note } });
+      toast(action === 'approve' ? 'Approved' : 'Rejected');
       render();
+    });
+  } else if (tab === 'topups') {
+    const status = ['approved', 'rejected'].includes(q.status) ? q.status : 'pending';
+    const rows = await api(`/admin/topups?status=${status}`);
+    const sub = (st, label) => `<a class="btn small ${status === st ? '' : 'ghost'}" href="#/admin?tab=topups&status=${st}">${label}</a>`;
+    body.innerHTML = `
+      <div class="tabs">${sub('pending', 'Pending')}${sub('approved', 'Approved')}${sub('rejected', 'Rejected')}</div>
+      <p class="muted small">Check each transaction ID in your JazzCash / Easypaisa / bank app before approving.</p>
+      ${rows.map((t) => `
+      <div class="card" data-topup="${t.id}">
+        <div class="ride-top"><b>${money(t.amount)}</b><span class="muted small">${timeAgo(t.created_at)}</span></div>
+        <div class="small"><a href="#/user/${t.user_id}">${esc(t.user_name)}</a> · ${esc(t.user_phone)}</div>
+        <div class="list-row"><span class="muted">${esc(t.method)}</span><b class="plate">${esc(t.reference)}</b></div>
+        ${t.note ? `<p class="small muted">${esc(t.note)}</p>` : ''}
+        ${status === 'pending' ? `
+        <div class="field"><input name="note" placeholder="Note (if rejecting)"></div>
+        <div class="actions">
+          <button class="btn small" data-action="approve" data-id="${t.id}">Approve & credit</button>
+          <button class="btn small ghost" data-action="reject" data-id="${t.id}">Reject</button>
+        </div>` : ''}
+      </div>`).join('') || '<div class="card empty">Nothing here.</div>'}`;
+    onClick(body, async (action, data) => {
+      const note = body.querySelector(`[data-topup="${data.id}"] input[name=note]`)?.value;
+      await api(`/admin/topups/${data.id}/${action}`, { method: 'POST', body: { note } });
+      toast(action === 'approve' ? 'Wallet credited' : 'Rejected');
+      render();
+    });
+  } else if (tab === 'settings') {
+    const { values, spec } = await api('/admin/settings');
+    const MODE = { driver_choice: 'Driver decides (instant or approve)', manual: 'Driver must approve every booking', instant: 'Every booking is confirmed instantly' };
+    const groups = [
+      ['Booking acceptance', ['booking_mode']],
+      ['Fees', ['driver_commission_pct', 'passenger_commission_pct', 'free_confirmations', 'min_topup']],
+      ['Reliability points', ['reliability_threshold', 'low_reliability_fee', 'penalty_driver_cancel', 'penalty_passenger_cancel', 'late_cancel_hours', 'reward_completed']],
+      ['Onboarding & security', ['require_phone_verification', 'require_id_for_booking', 'require_driver_approval', 'student_price_requires_verification']],
+      ['Wallet top-up accounts', ['topup_accounts']],
+    ];
+    const input = (k) => {
+      const sp = spec[k];
+      const v = values[k];
+      if (sp.type === 'boolean') return `<label class="check"><input type="checkbox" name="${k}" ${v ? 'checked' : ''}> ${esc(sp.label)}</label>`;
+      if (sp.options) return `<div class="field"><label>${esc(sp.label)}</label><select name="${k}">${sp.options.map((o) => `<option value="${o}" ${o === v ? 'selected' : ''}>${esc(MODE[o] || o)}</option>`).join('')}</select></div>`;
+      if (sp.type === 'number') return `<div class="field"><label>${esc(sp.label)}</label><input name="${k}" type="number" min="${sp.min}" max="${sp.max}" value="${v}" required></div>`;
+      return `<div class="field"><label>${esc(sp.label)}</label><textarea name="${k}" rows="3">${esc(v)}</textarea></div>`;
+    };
+    body.innerHTML = `
+      <form id="settings">
+        ${groups.map(([title, keys]) => `<div class="card"><h3>${title}</h3>${keys.map(input).join('')}</div>`).join('')}
+        <button class="btn block" type="submit">Save settings</button>
+      </form>`;
+    onSubmit($('#settings', body), async (_d, form) => {
+      const patch = {};
+      for (const [k, sp] of Object.entries(spec)) {
+        const el = form.elements[k];
+        if (!el) continue;
+        patch[k] = sp.type === 'boolean' ? el.checked : sp.type === 'number' ? Number(el.value) : el.value;
+      }
+      settings = (await api('/admin/settings', { method: 'PUT', body: patch })).values;
+      toast('Settings saved');
     });
   } else if (tab === 'reports') {
     const status = q.status === 'resolved' ? 'resolved' : 'open';
@@ -1066,14 +1475,41 @@ views.admin = async (page, q) => {
           <div><a href="#/user/${u.id}"><b>${esc(u.name)}</b></a> ${u.role === 'admin' ? '<span class="badge">admin</span>' : ''}
             <div class="small muted">${esc(u.email)} · ${esc(u.phone)} · ${esc(TYPE_LABEL[u.traveler_type])}</div>
             <div class="badges">
-              <span class="badge ${u.verification_status === 'verified' ? 'confirmed' : u.verification_status === 'pending' ? 'pending' : ''}">${u.verification_status === 'none' ? 'not verified' : u.verification_status}</span>
+              <span class="badge ${u.verification_status === 'verified' ? 'confirmed' : u.verification_status === 'pending' ? 'pending' : ''}">ID ${u.verification_status === 'none' ? 'not verified' : u.verification_status}</span>
+              ${u.driver_status !== 'none' ? `<span class="badge ${u.driver_status === 'approved' ? 'confirmed' : u.driver_status === 'pending' ? 'pending' : 'cancelled'}">driver ${u.driver_status}</span>` : ''}
+              ${u.phone_verified ? '<span class="badge">📱 verified</span>' : ''}
+              <span class="badge">${money(u.wallet_balance)}</span>
+              <span class="badge ${u.reliability < settings.reliability_threshold ? 'cancelled' : ''}">${u.reliability}% reliable</span>
               ${u.suspended ? '<span class="badge cancelled">suspended</span>' : ''}
             </div>
+            <details class="small" style="margin-top:6px"><summary>Wallet & reliability</summary>
+              <form class="adjust" data-user="${u.id}" style="margin-top:8px">
+                <div class="row two">
+                  <input name="amount" type="number" placeholder="Rs, e.g. 200 or -200" required>
+                  <input name="note" placeholder="Reason" required>
+                </div>
+                <button class="btn small" type="submit" style="margin-top:6px">Adjust wallet</button>
+              </form>
+              <form class="reliab" data-user="${u.id}" style="margin-top:8px">
+                <input name="reliability" type="number" min="0" max="100" value="${u.reliability}" style="width:100px">
+                <button class="btn small ghost" type="submit">Set reliability</button>
+              </form>
+            </details>
           </div>
           ${u.role !== 'admin' ? `<button class="btn small ${u.suspended ? '' : 'danger'}" data-action="suspend" data-user="${u.id}" data-suspended="${u.suspended ? 0 : 1}">${u.suspended ? 'Unsuspend' : 'Suspend'}</button>` : ''}
         </div>
       </div>`).join('') || '<div class="card empty">No users found.</div>'}`;
     onSubmit($('#user-search', body), (d) => { location.hash = `#/admin?tab=users&q=${encodeURIComponent(d.q)}`; });
+    body.querySelectorAll('form.adjust').forEach((f) => onSubmit(f, async (d) => {
+      await api(`/admin/users/${f.dataset.user}/wallet`, { method: 'POST', body: { amount: Number(d.amount), note: d.note } });
+      toast('Wallet adjusted');
+      render();
+    }));
+    body.querySelectorAll('form.reliab').forEach((f) => onSubmit(f, async (d) => {
+      await api(`/admin/users/${f.dataset.user}/reliability`, { method: 'POST', body: { reliability: Number(d.reliability) } });
+      toast('Reliability updated');
+      render();
+    }));
     onClick(body, async (action, data) => {
       if (action !== 'suspend') return;
       if (data.suspended === '1' && !confirm('Suspend this user? They will be logged out everywhere.')) return;
@@ -1092,7 +1528,10 @@ function parseHash() {
   return { name: parts[0] || 'home', id: parts[1], query: Object.fromEntries(new URLSearchParams(query)) };
 }
 
-const NAV_GROUP = { search: 'home', requests: 'offer', register: 'login', chat: 'inbox', admin: 'profile', user: 'home', ride: 'trips' };
+const NAV_GROUP = {
+  search: 'home', requests: 'offer', register: 'login', chat: 'inbox', admin: 'profile', user: 'home', ride: 'trips',
+  'verify-phone': 'profile', 'verify-id': 'profile', driver: 'offer', wallet: 'profile',
+};
 
 function renderNav(active) {
   const total = unread.notifications + unread.messages;
@@ -1142,14 +1581,24 @@ async function render() {
   renderNav(parseHash().name);
 }
 
-window.addEventListener('hashchange', () => { render(); window.scrollTo(0, 0); });
-
-(async function init() {
-  [cities] = await Promise.all([
+// Loads the session and settings once; pages render only after this, so a
+// navigation during start-up does not render as logged out.
+const ready = (async function init() {
+  [cities, settings] = await Promise.all([
     api('/cities').catch(() => []),
+    api('/settings').catch(() => ({})),
     store.token ? api('/me').then((u) => { me = u; }).catch(() => { store.token = null; }) : null,
   ]);
+})();
+
+window.addEventListener('hashchange', async () => {
+  await ready;
+  render();
+  window.scrollTo(0, 0);
+});
+
+ready.then(() => {
   render();
   refreshUnread();
   setInterval(refreshUnread, 30000);
-})();
+});

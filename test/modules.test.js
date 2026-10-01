@@ -4,9 +4,6 @@ const { startServer, inHours, rideBody } = require('./helpers');
 
 let db, call, register, close;
 
-// 1x1 transparent PNG.
-const PNG = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
-
 before(async () => {
   process.env.ADMIN_EMAILS = 'boss@test.pk';
   ({ db, call, register, close } = await startServer());
@@ -134,33 +131,9 @@ test('ride requests and matching-ride alerts', async () => {
   assert.equal(bad.status, 400);
 });
 
-test('document verification reviewed by an admin', async () => {
+test('reports, suspension and admin stats', async () => {
   const admin = await register({ email: 'boss@test.pk' });
   assert.equal(admin.user.role, 'admin');
-  const user = await register({ traveler_type: 'student' });
-
-  assert.equal((await call('POST', '/me/verification', { token: user.token, body: { doc_type: 'student_card', image: 'nope' } })).status, 400);
-  const up = await call('POST', '/me/verification', { token: user.token, body: { doc_type: 'student_card', image: PNG } });
-  assert.equal(up.status, 200, JSON.stringify(up.body));
-  assert.equal(up.body.verification_status, 'pending');
-
-  assert.equal((await call('GET', '/admin/verifications', { token: user.token })).status, 403);
-  const queue = await call('GET', '/admin/verifications', { token: admin.token });
-  assert.deepEqual(queue.body.map((u) => u.id), [user.user.id]);
-
-  const doc = await call('GET', `/admin/users/${user.user.id}/document`, { token: admin.token });
-  assert.equal(doc.status, 200);
-  assert.equal(doc.headers.get('content-type'), 'image/png');
-
-  await call('POST', `/admin/users/${user.user.id}/verification`, { token: admin.token, body: { approve: true } });
-  const profile = await call('GET', `/users/${user.user.id}`);
-  assert.equal(profile.body.verified, true);
-  assert.equal(profile.body.verified_as, 'student_card');
-  assert.match((await call('GET', '/notifications', { token: user.token })).body[0].title, /verified/);
-});
-
-test('reports, suspension and admin stats', async () => {
-  const admin = (await call('POST', '/auth/login', { body: { email: 'boss@test.pk', password: 'secret123' } })).body;
   const reporter = await register();
   const bad = await register({ email: 'bad@test.pk' });
 

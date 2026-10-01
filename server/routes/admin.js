@@ -1,10 +1,12 @@
 const express = require('express');
 const path = require('node:path');
 const { requireAdmin } = require('../auth');
-const { HttpError, bad, str } = require('../errors');
+const { transaction } = require('../db');
+const { HttpError, bad, str, int } = require('../errors');
 const { notify } = require('../notify');
-
-const DOC_LABEL = { cnic: 'CNIC', student_card: 'student card', employee_card: 'employee card', driving_license: 'driving licence' };
+const { getSettings, setSettings, settingsSpec } = require('../settings');
+const { applyTxn } = require('../wallet');
+const { smsConfigured } = require('../sms');
 
 module.exports = function adminRouter(db, { uploadDir }) {
   const router = express.Router();
@@ -19,6 +21,9 @@ module.exports = function adminRouter(db, { uploadDir }) {
     id: u.id, name: u.name, email: u.email, phone: u.phone, traveler_type: u.traveler_type, gender: u.gender,
     organization: u.organization, role: u.role, suspended: !!u.suspended, verification_status: u.verification_status,
     verification_doc_type: u.verification_doc_type, created_at: u.created_at,
+    phone_verified: !!u.phone_verified, cnic: u.cnic ? `${u.cnic.slice(0, 5)}-${u.cnic.slice(5, 12)}-${u.cnic.slice(12)}` : null,
+    student_status: u.student_status, driver_status: u.driver_status, licence_number: u.licence_number,
+    reliability: u.reliability, wallet_balance: u.wallet_balance,
   });
   const countBy = (sql) => Object.fromEntries(db.prepare(sql).all().map((r) => [r.k, r.n]));
 
@@ -31,6 +36,13 @@ module.exports = function adminRouter(db, { uploadDir }) {
       open_requests: db.prepare(`SELECT COUNT(*) n FROM ride_requests WHERE status = 'open' AND latest_at > ?`).get(new Date().toISOString()).n,
       pending_verifications: db.prepare(`SELECT COUNT(*) n FROM users WHERE verification_status = 'pending'`).get().n,
       open_reports: db.prepare(`SELECT COUNT(*) n FROM reports WHERE status = 'open'`).get().n,
+      pending_topups: db.prepare(`SELECT COUNT(*) n FROM topup_requests WHERE status = 'pending'`).get().n,
+      // Money earned: fees charged minus fees refunded.
+      revenue: -db.prepare(`SELECT COALESCE(SUM(amount), 0) n FROM wallet_transactions WHERE type IN ('commission', 'fee', 'refund')`).get().n,
+      revenue_30d: -db.prepare(`SELECT COALESCE(SUM(amount), 0) n FROM wallet_transactions
+        WHERE type IN ('commission', 'fee', 'refund') AND created_at > ?`).get(new Date(Date.now() - 30 * 864e5).toISOString()).n,
+      wallet_total: db.prepare('SELECT COALESCE(SUM(wallet_balance), 0) n FROM users').get().n,
+      sms_configured: smsConfigured(),
     });
   });
 
@@ -40,30 +52,109 @@ module.exports = function adminRouter(db, { uploadDir }) {
     res.json(rows.map(summary));
   });
 
+  // Everyone with something to review: identity, student card or driver application.
   router.get('/verifications', (_req, res) => {
-    res.json(db.prepare(`SELECT * FROM users WHERE verification_status = 'pending' ORDER BY id`).all().map(summary));
+    const users = db.prepare(`
+      SELECT * FROM users WHERE verification_status = 'pending' OR student_status = 'pending' OR driver_status = 'pending'
+      ORDER BY id`).all();
+    res.json(users.map((u) => ({
+      ...summary(u),
+      vehicle: db.prepare('SELECT * FROM vehicles WHERE user_id = ?').get(u.id) || null,
+      // Latest upload of each kind.
+      documents: db.prepare(`
+        SELECT id, kind, created_at FROM documents d WHERE user_id = ?
+          AND id = (SELECT MAX(id) FROM documents WHERE user_id = d.user_id AND kind = d.kind)
+        ORDER BY id`).all(u.id),
+    })));
   });
 
-  router.get('/users/:id/document', (req, res) => {
-    const user = getUser(req.params.id);
-    if (!user.verification_file) throw new HttpError(404, 'No document uploaded');
+  router.get('/documents/:id', (req, res) => {
+    const doc = db.prepare('SELECT * FROM documents WHERE id = ?').get(Number(req.params.id));
+    if (!doc) throw new HttpError(404, 'Document not found');
     res.set('cache-control', 'private, no-store');
-    res.sendFile(path.join(uploadDir, path.basename(user.verification_file)));
+    res.sendFile(path.join(uploadDir, path.basename(doc.file)));
   });
 
-  router.post('/users/:id/verification', (req, res) => {
+  // Approves or rejects everything the user has waiting for review.
+  router.post('/users/:id/review', (req, res) => {
     const user = getUser(req.params.id);
-    if (user.verification_status !== 'pending') throw bad('This user has no pending verification');
     const approve = !!(req.body && req.body.approve);
     const note = str(req.body && req.body.note, 'Note', { max: 300 });
-    db.prepare('UPDATE users SET verification_status = ?, verification_note = ? WHERE id = ?')
-      .run(approve ? 'verified' : 'rejected', note, user.id);
-    notify(db, user.id,
-      approve ? 'You are verified ✅' : 'Verification not approved',
-      approve ? `Your ${DOC_LABEL[user.verification_doc_type]} was approved. Your profile now shows a verified badge.`
-        : note || 'Please upload a clearer photo of your document.',
-      '/profile');
+    const done = [];
+    transaction(db, () => {
+      if (user.verification_status === 'pending') {
+        db.prepare('UPDATE users SET verification_status = ?, verification_note = ? WHERE id = ?')
+          .run(approve ? 'verified' : 'rejected', note, user.id);
+        done.push('identity');
+      }
+      if (user.student_status === 'pending') {
+        db.prepare('UPDATE users SET student_status = ? WHERE id = ?').run(approve ? 'verified' : 'rejected', user.id);
+        done.push('student card');
+      }
+      if (user.driver_status === 'pending') {
+        const identityOk = approve && (user.verification_status === 'verified' || done.includes('identity'));
+        db.prepare('UPDATE users SET driver_status = ?, driver_note = ? WHERE id = ?')
+          .run(identityOk ? 'approved' : 'rejected', note, user.id);
+        done.push('driver registration');
+      }
+      if (!done.length) throw bad('Nothing is waiting for review for this user');
+      notify(db, user.id,
+        approve ? 'You are verified ✅' : 'Verification not approved',
+        approve ? `Approved: ${done.join(', ')}.${done.includes('driver registration') ? ' You can now post rides.' : ''}`
+          : `Not approved: ${done.join(', ')}. ${note || 'Please upload clearer photos and try again.'}`,
+        '/profile');
+    });
     res.json(summary(getUser(user.id)));
+  });
+
+  // Credit (positive) or debit (negative) a wallet by hand, e.g. a goodwill credit.
+  router.post('/users/:id/wallet', (req, res) => {
+    const user = getUser(req.params.id);
+    const amount = int(req.body && req.body.amount, 'Amount', { min: -100000, max: 100000 });
+    if (!amount) throw bad('Amount cannot be zero');
+    const note = str(req.body && req.body.note, 'Reason', { required: true, max: 200 });
+    transaction(db, () => {
+      applyTxn(db, user.id, amount, 'adjustment', { note });
+      notify(db, user.id, amount > 0 ? `Rs ${amount} added to your wallet` : `Rs ${-amount} deducted from your wallet`, note, '/wallet');
+    });
+    res.json(summary(getUser(user.id)));
+  });
+
+  router.post('/users/:id/reliability', (req, res) => {
+    const user = getUser(req.params.id);
+    const value = int(req.body && req.body.reliability, 'Reliability', { min: 0, max: 100 });
+    db.prepare('UPDATE users SET reliability = ? WHERE id = ?').run(value, user.id);
+    res.json(summary(getUser(user.id)));
+  });
+
+  router.get('/settings', (_req, res) => res.json({ values: getSettings(db), spec: settingsSpec() }));
+  router.put('/settings', (req, res) => res.json({ values: setSettings(db, req.body), spec: settingsSpec() }));
+
+  router.get('/topups', (req, res) => {
+    const status = ['approved', 'rejected'].includes(req.query.status) ? req.query.status : 'pending';
+    res.json(db.prepare(`
+      SELECT t.*, u.name AS user_name, u.phone AS user_phone FROM topup_requests t JOIN users u ON u.id = t.user_id
+      WHERE t.status = ? ORDER BY t.id DESC LIMIT 100`).all(status));
+  });
+
+  router.post('/topups/:id/:decision', (req, res) => {
+    const { decision } = req.params;
+    if (!['approve', 'reject'].includes(decision)) throw new HttpError(404, 'Not found');
+    const note = str(req.body && req.body.note, 'Note', { max: 200 });
+    transaction(db, () => {
+      const t = db.prepare('SELECT * FROM topup_requests WHERE id = ?').get(Number(req.params.id));
+      if (!t) throw new HttpError(404, 'Top-up not found');
+      if (t.status !== 'pending') throw bad(`This top-up is already ${t.status}`);
+      db.prepare('UPDATE topup_requests SET status = ?, note = ?, reviewed_at = ? WHERE id = ?')
+        .run(decision === 'approve' ? 'approved' : 'rejected', note, new Date().toISOString(), t.id);
+      if (decision === 'approve') {
+        applyTxn(db, t.user_id, t.amount, 'topup', { note: `${t.method} ref ${t.reference}` });
+        notify(db, t.user_id, `Rs ${t.amount} added to your wallet ✅`, `Top-up ${t.reference} approved`, '/wallet');
+      } else {
+        notify(db, t.user_id, 'Top-up not approved', `${t.reference}: ${note || 'We could not find this payment.'}`, '/wallet');
+      }
+    });
+    res.json({ ok: true });
   });
 
   router.post('/users/:id/suspend', (req, res) => {

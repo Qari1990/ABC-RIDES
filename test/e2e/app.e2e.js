@@ -16,13 +16,17 @@ const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'abc-rides-e2e-'));
 process.env.ADMIN_EMAILS = 'admin@e2e.pk';
 const { openDb } = require('../../server/db');
 const { createApp } = require('../../server/app');
+const { setSettings, getSettings } = require('../../server/settings');
 
 let server, base, browser, db;
 const errors = [];
 const users = {};
 
-// A small valid PNG to upload as an ID document.
+// A small valid PNG to upload as an ID document. Written once: the browser
+// reads uploads from disk lazily, so rewriting it mid-test corrupts uploads.
+let pngPath;
 function pngFile() {
+  if (pngPath) return pngPath;
   const w = 40;
   const h = 25;
   const raw = Buffer.concat(Array.from({ length: h }, () => Buffer.from([0, ...Array(w).fill([15, 118, 110]).flat()])));
@@ -38,6 +42,7 @@ function pngFile() {
     Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
     chunk('IHDR', ihdr), chunk('IDAT', zlib.deflateSync(raw)), chunk('IEND', Buffer.alloc(0)),
   ]));
+  pngPath = file;
   return file;
 }
 
@@ -98,18 +103,31 @@ async function openUser(name, { withBridge = false } = {}) {
   return u;
 }
 
-async function register(u, { email, type, gender, org }) {
+// Signs up through the form, then verifies the phone with the one-time code
+// (shown on screen because no SMS gateway is configured in tests).
+async function register(u, { email, phone, type, gender, org }) {
   await u.go('/register', '#register');
   await u.page.fill('#pn', u.name);
-  await u.page.fill('#pp', '+92 300 1112233');
+  await u.page.fill('#pp', phone);
   await u.page.selectOption('#pt', type);
   if (gender) await u.page.selectOption('#pg', gender);
   if (org) await u.page.fill('#po', org);
   await u.page.fill('#re', email);
   await u.page.fill('#rp', 'password123');
   await u.page.click('#register [type=submit]');
+  await u.page.waitForSelector('#otp');
+  await u.page.waitForFunction(() => /^\d{6}$/.test(document.querySelector('#code').value));
+  assert.match(await u.page.textContent('#dev-code'), /Development mode/);
+  await u.page.click('#otp [type=submit]');
   await u.page.waitForSelector('.hero');
   u.email = email;
+  u.phone = phone;
+}
+
+async function addPhotos(page, names) {
+  for (const n of names) await page.setInputFiles(`input[name=${n}]`, pngFile());
+  // Photos are resized in the browser before upload; wait for every preview.
+  await page.waitForFunction((list) => list.every((n) => !document.querySelector(`input[name=${n}]`).parentElement.querySelector('img').hidden), names);
 }
 
 const rideIdFromUrl = (page) => Number(page.url().match(/#\/ride\/(\d+)/)[1]);
@@ -120,14 +138,63 @@ async function badgeCount(u) {
   return (await dot.count()) ? Number(await dot.textContent()) : 0;
 }
 
-test('1. sign up: driver, student, traveller, admin', async () => {
-  await register(await openUser('Sana Driver'), { email: 'sana@e2e.pk', type: 'professional', gender: 'female', org: 'Engro' });
-  await register(await openUser('Ali Student', { withBridge: true }), { email: 'ali@e2e.pk', type: 'student', gender: 'male', org: 'FAST Lahore' });
-  await register(await openUser('Zara Traveller'), { email: 'zara@e2e.pk', type: 'traveler', gender: 'female' });
-  await register(await openUser('Omar Passenger'), { email: 'omar@e2e.pk', type: 'traveler', gender: 'male' });
+test('1. sign up and verify phone: driver, student, traveller, admin', async () => {
+  await register(await openUser('Sana Driver'), { email: 'sana@e2e.pk', phone: '0300 1110001', type: 'professional', gender: 'female', org: 'Engro' });
+  await register(await openUser('Ali Student', { withBridge: true }), { email: 'ali@e2e.pk', phone: '0300 1110002', type: 'student', gender: 'male', org: 'FAST Lahore' });
+  await register(await openUser('Zara Traveller'), { email: 'zara@e2e.pk', phone: '0300 1110003', type: 'traveler', gender: 'female' });
+  await register(await openUser('Omar Passenger'), { email: 'omar@e2e.pk', phone: '0300 1110004', type: 'traveler', gender: 'male' });
   const admin = await openUser('Admin');
-  await register(admin, { email: 'admin@e2e.pk', type: 'professional' });
+  await register(admin, { email: 'admin@e2e.pk', phone: '0300 1110005', type: 'professional' });
   await admin.go('/profile', 'text=Admin panel');
+  assert.match(await admin.page.textContent('.card:has(h3:text("Account setup"))'), /Phone number[\s\S]*0300 1110005/);
+});
+
+test('1b. onboarding: driver wizard, student card, admin approval', async () => {
+  const sana = users['Sana Driver'];
+  await sana.go('/offer', 'text=Register as a driver');
+  await sana.page.click('text=Register as a driver');
+  await sana.page.waitForSelector('#drv');
+  await sana.page.fill('#cnic', '3520212345671');
+  assert.equal(await sana.page.inputValue('#cnic'), '35202-1234567-1', 'CNIC is formatted as you type');
+  await sana.page.fill('#lic', 'LHR-998877');
+  await sana.page.fill('#drv [name=make]', 'Honda');
+  await sana.page.fill('#drv [name=model]', 'City');
+  await sana.page.fill('#drv [name=year]', '2021');
+  await sana.page.fill('#drv [name=color]', 'Silver');
+  await sana.page.fill('#drv [name=plate]', 'lea-2468');
+  await sana.page.click('#drv [type=submit]');
+  await sana.page.waitForSelector('.toast.error');
+  assert.match(await sana.page.textContent('#toast'), /Please add a photo/);
+  await addPhotos(sana.page, ['cnic_front', 'cnic_back', 'selfie', 'licence_photo', 'vehicle_photo', 'registration_photo']);
+  await sana.page.click('#drv [type=submit]');
+  await sana.page.waitForSelector('text=Driver registration under review');
+  assert.match(await sana.page.textContent('#view'), /LEA-2468/);
+  await sana.go('/offer', 'text=View my application');
+
+  const ali = users['Ali Student'];
+  await ali.go('/verify-id', '#idv');
+  await ali.page.fill('#cnic', '35202-7654321-3');
+  await addPhotos(ali.page, ['cnic_front', 'cnic_back', 'selfie', 'student_card']);
+  await ali.page.click('#idv [type=submit]');
+  await ali.page.waitForSelector('text=Account setup');
+  assert.match(await ali.page.textContent('#view'), /Identity[\s\S]*Under review[\s\S]*Student card[\s\S]*Under review/);
+
+  const admin = users.Admin;
+  await admin.go('/admin?tab=verify', '[data-user]');
+  assert.equal(await admin.page.locator('#admin-body [data-user]').count(), 2);
+  const sanaCard = admin.page.locator('[data-user]', { hasText: 'Sana Driver' });
+  assert.match(await sanaCard.textContent(), /identity \+ driver[\s\S]*35202-1234567-1[\s\S]*LHR-998877[\s\S]*Honda City 2021, Silver · LEA-2468/);
+  await admin.page.waitForFunction(() => document.querySelectorAll('img.doc[src^="blob:"]').length === 10, null, { timeout: 15000 });
+  await sanaCard.locator('[data-action=decline]').click();
+  await admin.toast(/write a note/);
+  await sanaCard.locator('[data-action=approve]').click();
+  await admin.page.waitForFunction(() => document.querySelectorAll('#admin-body [data-user]').length === 1);
+  await admin.page.locator('[data-user]', { hasText: 'Ali Student' }).locator('[data-action=approve]').click();
+  await admin.page.waitForSelector('text=No pending verifications');
+
+  await sana.go('/inbox', '#inbox-list .card');
+  assert.match(await sana.page.textContent('#inbox-list'), /You are verified[\s\S]*driver registration[\s\S]*can now post rides/);
+  await ali.go('/profile', 'text=Student prices unlocked');
 });
 
 test('2. offer a ride: travel time is estimated and payment details saved', async () => {
@@ -185,9 +252,9 @@ test('4. women-only ride by a woman driver', async () => {
   await page.waitForURL(/#\/ride\/\d+/);
   users['Sana Driver'].womenRideId = rideIdFromUrl(page);
   await page.waitForSelector('text=Women only');
-  // Men never see the women-only checkbox.
-  await users['Omar Passenger'].go('/offer', '#offer');
-  assert.equal(await users['Omar Passenger'].page.locator('[name=women_only]').count(), 0);
+  // People who have not registered as drivers are asked to register first.
+  await users['Omar Passenger'].go('/offer', 'text=Become a driver');
+  assert.equal(await users['Omar Passenger'].page.locator('#offer').count(), 0);
 });
 
 test('5. search: student price, arrival time and time-of-day filter', async () => {
@@ -239,7 +306,8 @@ test('7. request to book → driver accepts → passenger sees phone and payment
   const text = await ali.page.textContent('#view');
   assert.match(text, /confirmed/);
   assert.match(text, /Pay to: JazzCash 0300 1112233/);
-  assert.match(text, /Driver: \+92 300 1112233/);
+  assert.match(text, /Driver: 0300 1110001/);
+  assert.match(text, /Car: Honda City \(silver\), plate LEA-2468/, 'the vehicle text the driver typed in test 2');
   await ali.go('/inbox', '#inbox-list .card');
   assert.match(await ali.page.textContent('#inbox-list'), /Booking confirmed/);
 });
@@ -329,30 +397,34 @@ test('11. ride request → matching ride → passenger alerted', async () => {
   assert.match(await zara.page.textContent('#inbox-list'), /A ride matches your request: Multan → Lahore/);
 });
 
-test('12. ID verification: approve one, reject another', async () => {
-  const file = pngFile();
-  for (const name of ['Ali Student', 'Zara Traveller']) {
-    const u = users[name];
-    await u.go('/profile', '#verify');
-    await u.page.setInputFiles('#verify [name=photo]', file);
-    await u.page.click('#verify [type=submit]');
-    await u.page.waitForSelector('text=under review');
-  }
+test('12. ID verification: one account per CNIC; a rejection tells the user what to fix', async () => {
+  const zara = users['Zara Traveller'];
+  await zara.go('/profile', 'text=Account setup');
+  await zara.page.click('.setup-row:has-text("Identity")');
+  await zara.page.waitForSelector('#idv');
+  // Ali already registered this CNIC.
+  await zara.page.fill('#cnic', '35202-7654321-3');
+  await addPhotos(zara.page, ['cnic_front', 'cnic_back', 'selfie']);
+  await zara.page.click('#idv [type=submit]');
+  await zara.toast(/already registered with another account/);
+  await zara.page.fill('#cnic', '61101-5556667-8');
+  await zara.page.click('#idv [type=submit]');
+  await zara.page.waitForSelector('text=Account setup');
+
   const admin = users.Admin;
-  await admin.go('/admin?tab=verify', 'img.doc[src^="blob:"]');
-  assert.equal(await admin.page.locator('#admin-body .card').count(), 2);
-  await admin.page.locator('#admin-body .card', { hasText: 'Ali Student' }).locator('text=Approve').click();
-  await admin.page.waitForFunction(() => document.querySelectorAll('#admin-body .card').length === 1);
-  const zaraCard = admin.page.locator('#admin-body .card', { hasText: 'Zara Traveller' });
-  await zaraCard.locator('input[name=note]').fill('Photo is blurry');
-  await zaraCard.locator('text=Reject').click();
+  await admin.go('/admin?tab=verify', '[data-user]');
+  const card = admin.page.locator('[data-user]', { hasText: 'Zara Traveller' });
+  await card.locator('input[name=note]').fill('Selfie is blurry');
+  await card.locator('[data-action=decline]').click();
   await admin.page.waitForSelector('text=No pending verifications');
 
-  await users['Ali Student'].go('/profile', 'h3:has-text("Verified")');
-  await users['Zara Traveller'].go('/profile', '#verify');
-  assert.match(await users['Zara Traveller'].page.textContent('#verify'), /not approved: Photo is blurry/);
-  await users['Omar Passenger'].go(`/user/${(await users['Ali Student'].page.evaluate(() => me.id))}`, '.person');
-  assert.match(await users['Omar Passenger'].page.textContent('#view'), /Student card verified/);
+  await zara.go('/profile', 'text=Account setup');
+  assert.match(await zara.page.textContent('#view'), /Not approved: Selfie is blurry/);
+  const aliId = await users['Ali Student'].page.evaluate(() => me.id);
+  await users['Omar Passenger'].go(`/user/${aliId}`, '.person');
+  const profile = await users['Omar Passenger'].page.textContent('#view');
+  assert.match(profile, /CNIC verified by ABC Rides/);
+  assert.match(profile, /✔ Verified/);
 });
 
 test('13. decline a request; passenger cancels a booking', async () => {
@@ -452,6 +524,98 @@ test('16. driver cancels a ride; booked passenger is notified', async () => {
   assert.match(await zara.page.textContent('#inbox-list'), /Ride cancelled by the driver/);
   await zara.go('/trips', '#list .card');
   assert.match(await zara.page.textContent('#list'), /ride cancelled/);
+});
+
+test('16b. wallet: fees after free bookings, top-ups approved by admin, commission on accept', async () => {
+  const before = getSettings(db);
+  setSettings(db, { free_confirmations: 0, driver_commission_pct: 10, passenger_commission_pct: 5 });
+  try {
+    const sana = users['Sana Driver'];
+    const zara = users['Zara Traveller'];
+    const admin = users.Admin;
+    await sana.go('/offer', '#offer');
+    await sana.page.fill('#of', 'Lahore');
+    await sana.page.fill('#ot', 'Sialkot');
+    await sana.page.fill('#ow', localDateTime(5, 7));
+    await sana.page.fill('#opr', '1000');
+    await sana.page.click('#offer [type=submit]');
+    await sana.page.waitForURL(/#\/ride\/\d+/);
+    const rideId = rideIdFromUrl(sana.page);
+
+    // 5% of Rs 2,000 for two seats = Rs 100, and Zara's wallet is empty.
+    await zara.go(`/ride/${rideId}`, '#book');
+    await zara.page.selectOption('#bseats', '2');
+    assert.match(await zara.page.textContent('#fee-box'), /Booking fee Rs 100 \(5%\)[\s\S]*Wallet: Rs 0[\s\S]*Top up/);
+    await zara.page.click('#book [type=submit]');
+    await zara.toast(/wallet balance \(Rs 0\) is too low/);
+    await zara.page.waitForURL(/#\/wallet/);
+    await zara.page.waitForSelector('#topup');
+    await zara.page.fill('#topup [name=amount]', '500');
+    await zara.page.selectOption('#topup [name=method]', 'easypaisa');
+    await zara.page.fill('#topup [name=reference]', 'EP20261001A');
+    await zara.page.click('#topup [type=submit]');
+    await zara.page.waitForSelector('.badge.pending');
+
+    await admin.go('/admin?tab=topups', '[data-topup]');
+    assert.match(await admin.page.textContent('[data-topup]'), /Rs 500[\s\S]*Zara Traveller[\s\S]*EP20261001A/);
+    await admin.page.click('[data-topup] [data-action=approve]');
+    await admin.page.waitForSelector('text=Nothing here.');
+
+    await zara.go('/wallet', '.balance');
+    assert.equal(await zara.page.textContent('.balance'), 'Rs 500');
+    await zara.go(`/ride/${rideId}`, '#book');
+    await zara.page.selectOption('#bseats', '2');
+    await zara.page.click('#book [type=submit]');
+    await zara.page.waitForSelector('text=Your booking');
+
+    // The driver owes 10% = Rs 200 and has an empty wallet.
+    await sana.go(`/ride/${rideId}`, '[data-action=confirm]');
+    assert.match(await sana.page.textContent('[data-action=confirm]'), /Accept · fee Rs 200/);
+    await sana.page.click('[data-action=confirm]');
+    await sana.toast(/Your wallet balance \(Rs 0\) is too low/);
+    await sana.page.waitForURL(/#\/wallet/);
+    await sana.page.waitForSelector('#topup');
+    await sana.page.fill('#topup [name=reference]', 'JC20261001B');
+    await sana.page.click('#topup [type=submit]');
+    await sana.page.waitForSelector('.badge.pending');
+    await admin.go('/admin?tab=topups', '[data-topup]');
+    await admin.page.click('[data-topup] [data-action=approve]');
+    await admin.page.waitForSelector('text=Nothing here.');
+
+    await sana.go(`/ride/${rideId}`, '[data-action=confirm]');
+    await sana.page.click('[data-action=confirm]');
+    await sana.page.waitForSelector('.badge.confirmed');
+    await sana.go('/wallet', '.balance');
+    assert.equal(await sana.page.textContent('.balance'), 'Rs 300');
+    assert.match(await sana.page.textContent('#view'), /Driver commission[\s\S]*10% commission on Rs 2000[\s\S]*−Rs 200/);
+    await zara.go('/wallet', '.balance');
+    assert.equal(await zara.page.textContent('.balance'), 'Rs 400');
+    await zara.go(`/ride/${rideId}`, 'text=Booking fee paid: Rs 100');
+
+    await admin.go('/admin', '.stats');
+    assert.match(await admin.page.textContent('.stats'), /Rs 300\s*Revenue \(all time\)/);
+  } finally {
+    setSettings(db, before);
+  }
+});
+
+test('16c. admin settings: booking mode and fees from the admin panel', async () => {
+  const admin = users.Admin;
+  await admin.go('/admin?tab=settings', '#settings');
+  await admin.page.selectOption('#settings [name=booking_mode]', 'manual');
+  await admin.page.fill('#settings [name=driver_commission_pct]', '7');
+  await admin.page.click('#settings [type=submit]');
+  await admin.toast(/Settings saved/);
+  assert.equal(getSettings(db).booking_mode, 'manual');
+  assert.equal(getSettings(db).driver_commission_pct, 7);
+
+  // Drivers no longer get the instant-booking option.
+  const sana = users['Sana Driver'];
+  await sana.page.reload();
+  await sana.go('/offer', '#offer');
+  assert.equal(await sana.page.locator('[name=instant_book]').count(), 0);
+  assert.match(await sana.page.textContent('#offer'), /You approve each booking request/);
+  setSettings(db, { booking_mode: 'driver_choice', driver_commission_pct: 5 });
 });
 
 test('17. change password, log out and log back in', async () => {
