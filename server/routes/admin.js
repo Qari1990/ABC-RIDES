@@ -7,6 +7,7 @@ const { notify } = require('../notify');
 const { getSettings, setSettings, settingsSpec } = require('../settings');
 const { applyTxn } = require('../wallet');
 const { smsConfigured } = require('../sms');
+const { backupStatus } = require('../backup');
 
 module.exports = function adminRouter(db, { uploadDir }) {
   const router = express.Router();
@@ -43,6 +44,7 @@ module.exports = function adminRouter(db, { uploadDir }) {
         WHERE type IN ('commission', 'fee', 'refund') AND created_at > ?`).get(new Date(Date.now() - 30 * 864e5).toISOString()).n,
       wallet_total: db.prepare('SELECT COALESCE(SUM(wallet_balance), 0) n FROM users').get().n,
       sms_configured: smsConfigured(),
+      backup: backupStatus(),
     });
   });
 

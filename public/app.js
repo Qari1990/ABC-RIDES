@@ -1715,6 +1715,11 @@ views.admin = async (page, q) => {
     body.innerHTML = `
       ${s.sms_configured ? '' : `<div class="card warn small">⚠️ <b>No SMS provider is set up.</b> Phone codes are shown on screen, so phone
         verification is not secure yet. Set <code>SMS_GATEWAY_URL</code> on the server before launch.</div>`}
+      ${!s.backup || !s.backup.configured
+        ? `<div class="card warn small">⚠️ <b>Data is not backed up.</b> On free hosting, accounts and rides are lost when the server restarts. Set <code>DATABASE_URL</code> to a free PostgreSQL database (e.g. Neon).</div>`
+        : s.backup.last_error
+          ? `<div class="card warn small">⚠️ <b>Backup failing:</b> ${esc(s.backup.last_error)}</div>`
+          : `<p class="small muted">✅ Data backed up${s.backup.last_saved_at ? ` · last saved ${esc(when(s.backup.last_saved_at))}` : ''}</p>`}
       <div class="stats">
         ${tile('Revenue (all time)', money(s.revenue))}
         ${tile('Revenue (30 days)', money(s.revenue_30d))}

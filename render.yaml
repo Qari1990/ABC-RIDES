@@ -1,8 +1,8 @@
 # One-click deploy on Render (https://render.com): New → Blueprint → pick this repo.
-# The free plan has no persistent disk, so data resets on each deploy/restart;
-# DEMO_SEED reloads the demo users and rides each time so the app is never
-# empty, and the server pings itself every 10 minutes so it doesn't fall
-# asleep. For real users, move to a paid plan with a disk mounted at /data.
+# The free plan has no persistent disk. Set DATABASE_URL to a free PostgreSQL
+# database (Neon) and all data is backed up there and restored after every
+# restart or deploy. DEMO_SEED fills an empty database with demo users and
+# rides; the server pings itself every 10 minutes so it doesn't fall asleep.
 services:
   - type: web
     name: abc-rides
@@ -13,6 +13,9 @@ services:
       - key: DEMO_SEED
         value: "1"
       - key: ADMIN_EMAILS
+        sync: false
+      # postgresql://... connection string of a free Neon database.
+      - key: DATABASE_URL
         sync: false
       # Optional: your SMS provider's send URL with {to} and {message}
       # placeholders. Without it, phone codes are shown on screen (test mode).

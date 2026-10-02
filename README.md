@@ -93,6 +93,7 @@ Environment variables:
 | `SMS_GATEWAY_METHOD` | `GET` | HTTP method for the SMS URL |
 | `SIGNUP_LIMIT_PER_HOUR` | `100` | Sign-ups allowed per network address per hour |
 | `ROUTING_URL` | `https://router.project-osrm.org` | OSRM server used by "Update distances from maps" |
+| `DATABASE_URL` | | PostgreSQL address (e.g. a free [Neon](https://neon.tech) database). The SQLite database and uploaded photos are copied there after every change and restored on start-up, so hosts that wipe the disk (Render free) keep all data |
 | `DEMO_SEED` | off | `1` loads the demo users and rides whenever the server starts with an empty database |
 | `KEEP_AWAKE_URL` | `RENDER_EXTERNAL_URL` | Public address the server pings every 10 minutes so free hosting doesn't put it to sleep (`KEEP_AWAKE=0` turns it off) |
 
