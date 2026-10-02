@@ -51,7 +51,7 @@ Made for office commuters, university students and anyone who travels between ci
 
 ## App content answers
 
-- **App access:** some features need login. Give reviewers `ahmed@example.com` / `password123` (driver) and `ayesha@example.com` / `password123` (passenger), with a note: "Phone codes are shown on screen in this version."
+- **App access:** some features need login. Create two test accounts for Google's reviewers (one approved driver, one passenger) and give their logins here. Don't use the old demo accounts; they are removed in production.
 - **Ads:** No ads.
 - **Content rating (IARC questionnaire):** Category "Social / communication". Users can interact and share location: Yes. No violence, sex, gambling or drugs. Expected result: Everyone/PEGI 3 with "Users interact" and "Shares location".
 - **Target audience:** 18 and over.

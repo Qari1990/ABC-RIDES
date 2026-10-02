@@ -91,6 +91,43 @@ function seedDemo(db) {
   });
 }
 
+/**
+ * Removes the demo accounts and everything tied to them (their rides, the
+ * bookings on those rides, chats, reviews...). Real users' wallet records are
+ * kept; only their link to a deleted ride or booking is cleared. Returns the
+ * number of demo accounts removed.
+ */
+function removeDemoData(db) {
+  const emails = users.map((u) => u[1]);
+  const ids = db.prepare(`SELECT id FROM users WHERE email IN (${emails.map(() => '?').join(', ')})`).all(...emails).map((r) => r.id);
+  if (!ids.length) return 0;
+  const who = `(${ids.map(Number).join(', ')})`; // integer ids from our own query
+  const rides = `(SELECT id FROM rides WHERE driver_id IN ${who})`;
+  const bookings = `(SELECT id FROM bookings WHERE passenger_id IN ${who} OR ride_id IN ${rides})`;
+  transaction(db, () => {
+    db.exec(`
+      DELETE FROM messages WHERE booking_id IN ${bookings} OR sender_id IN ${who};
+      DELETE FROM wallet_transactions WHERE user_id IN ${who};
+      UPDATE wallet_transactions SET booking_id = NULL WHERE booking_id IN ${bookings};
+      UPDATE wallet_transactions SET ride_id = NULL WHERE ride_id IN ${rides};
+      DELETE FROM reviews WHERE ride_id IN ${rides} OR reviewer_id IN ${who} OR reviewee_id IN ${who};
+      DELETE FROM reports WHERE reporter_id IN ${who} OR reported_user_id IN ${who} OR ride_id IN ${rides};
+      DELETE FROM bookings WHERE passenger_id IN ${who} OR ride_id IN ${rides};
+      DELETE FROM rides WHERE driver_id IN ${who};
+      DELETE FROM ride_requests WHERE passenger_id IN ${who};
+      DELETE FROM notifications WHERE user_id IN ${who};
+      DELETE FROM documents WHERE user_id IN ${who};
+      DELETE FROM vehicles WHERE user_id IN ${who};
+      DELETE FROM phone_codes WHERE user_id IN ${who};
+      DELETE FROM reset_codes WHERE user_id IN ${who};
+      DELETE FROM topup_requests WHERE user_id IN ${who};
+      DELETE FROM sessions WHERE user_id IN ${who};
+      DELETE FROM users WHERE id IN ${who};
+    `);
+  });
+  return ids.length;
+}
+
 /** Seeds only when nobody has signed up yet, so real data is never touched. */
 function seedIfEmpty(db) {
   if (db.prepare('SELECT COUNT(*) AS n FROM users').get().n > 0) return false;
@@ -98,7 +135,7 @@ function seedIfEmpty(db) {
   return true;
 }
 
-module.exports = { seedDemo, seedIfEmpty };
+module.exports = { seedDemo, seedIfEmpty, removeDemoData };
 
 if (require.main === module) {
   seedDemo(openDb());

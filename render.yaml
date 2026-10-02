@@ -1,8 +1,8 @@
 # One-click deploy on Render (https://render.com): New → Blueprint → pick this repo.
 # The free plan has no persistent disk. Set DATABASE_URL to a free PostgreSQL
 # database (Neon) and all data is backed up there and restored after every
-# restart or deploy. DEMO_SEED fills an empty database with demo users and
-# rides; the server pings itself every 10 minutes so it doesn't fall asleep.
+# restart or deploy. The server pings itself every 10 minutes so it doesn't
+# fall asleep. REMOVE_DEMO_DATA=1 deletes the demo accounts when going live.
 services:
   - type: web
     name: abc-rides
@@ -10,8 +10,9 @@ services:
     plan: free
     healthCheckPath: /api/health
     envVars:
+      # "1" fills an empty database with demo users and rides (testing only).
       - key: DEMO_SEED
-        value: "1"
+        value: "0"
       - key: ADMIN_EMAILS
         sync: false
       # postgresql://... connection string of a free Neon database.

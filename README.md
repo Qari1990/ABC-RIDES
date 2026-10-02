@@ -99,6 +99,7 @@ Environment variables:
 | `ROUTING_URL` | `https://router.project-osrm.org` | OSRM server used by "Update distances from maps" |
 | `DATABASE_URL` | | PostgreSQL address (e.g. a free [Neon](https://neon.tech) database). The SQLite database and uploaded photos are copied there after every change and restored on start-up, so hosts that wipe the disk (Render free) keep all data |
 | `MAP_TILE_URL` | OpenStreetMap | Map tiles (`{z}/{x}/{y}` URL). OpenStreetMap's servers are for light use; at scale use a provider such as MapTiler or Stadia with your key, and set `MAP_ATTRIBUTION` |
+| `REMOVE_DEMO_DATA` | off | `1` deletes the demo accounts (`*@example.com`) and their rides on start-up; use when going live |
 | `DEMO_SEED` | off | `1` loads the demo users and rides whenever the server starts with an empty database |
 | `KEEP_AWAKE_URL` | `RENDER_EXTERNAL_URL` | Public address the server pings every 10 minutes so free hosting doesn't put it to sleep (`KEEP_AWAKE=0` turns it off) |
 

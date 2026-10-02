@@ -2,7 +2,7 @@ const path = require('node:path');
 const { openDb } = require('./db');
 const { createApp } = require('./app');
 const { adminEmails } = require('./routes/users');
-const { seedIfEmpty } = require('./seed');
+const { seedIfEmpty, removeDemoData } = require('./seed');
 const { restore, startBackups, closeBackups } = require('./backup');
 
 const port = Number(process.env.PORT) || 3000;
@@ -18,7 +18,11 @@ async function main() {
 
   const db = openDb(dbFile);
 
-  if (/^(1|true|yes)$/i.test(process.env.DEMO_SEED || '') && seedIfEmpty(db)) {
+  // Going live: REMOVE_DEMO_DATA=1 deletes the demo accounts and their rides.
+  if (/^(1|true|yes)$/i.test(process.env.REMOVE_DEMO_DATA || '')) {
+    const removed = removeDemoData(db);
+    if (removed) console.log(`Removed ${removed} demo accounts and their rides (REMOVE_DEMO_DATA is on).`);
+  } else if (/^(1|true|yes)$/i.test(process.env.DEMO_SEED || '') && seedIfEmpty(db)) {
     console.log('Empty database: loaded the demo users and rides (DEMO_SEED is on).');
   }
 
