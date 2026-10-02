@@ -223,13 +223,45 @@ function requirePhotos(photos, names) {
   if (missing.length) throw new Error(`Please add a photo of your ${missing.map((n) => labels[n] || n).join(', ')}`);
 }
 
-// 3520212345671 -> 35202-1234567-1 as the user types.
-function formatCnicInput(input) {
-  input.addEventListener('input', () => {
-    const d = input.value.replace(/\D/g, '').slice(0, 13);
-    input.value = [d.slice(0, 5), d.slice(5, 12), d.slice(12)].filter(Boolean).join('-');
-  });
+// Mobile and CNIC fields: typed by hand, formatted as you type, with a digit
+// count, and the form won't submit until the length is right.
+//   <input data-mobile> → 0300 1234567 (11 digits)   <input data-cnic> → 35202-1234567-1 (13 digits)
+const mobileAttrs = 'data-mobile type="tel" inputmode="numeric" maxlength="16" pattern="03[0-9]{2} [0-9]{7}" placeholder="03xx xxxxxxx" autocomplete="tel-national"';
+const cnicAttrs = 'data-cnic inputmode="numeric" maxlength="17" pattern="[1-7][0-9]{4}-[0-9]{7}-[0-9]" placeholder="35202-1234567-1"';
+function formatMobile(value) {
+  let d = value.replace(/\D/g, '');
+  if (d.startsWith('0092')) d = d.slice(2);
+  if (d.startsWith('92')) d = `0${d.slice(2)}`;
+  else if (d.startsWith('3')) d = `0${d}`;
+  d = d.slice(0, 11);
+  return d.length > 4 ? `${d.slice(0, 4)} ${d.slice(4)}` : d;
 }
+function digitHint(input, need, what) {
+  let hint = input.parentElement.querySelector('.digit-hint');
+  if (!hint) {
+    hint = document.createElement('span');
+    hint.className = 'digit-hint small';
+    input.insertAdjacentElement('afterend', hint);
+  }
+  const n = input.value.replace(/\D/g, '').length;
+  const ok = input.checkValidity() && n === need;
+  hint.textContent = !n ? '' : ok ? '✓' : `${n}/${need} digits${what && n === need ? ` · ${what}` : ''}`;
+  hint.classList.toggle('ok', ok);
+}
+document.addEventListener('input', (e) => {
+  const el = e.target;
+  if (!(el instanceof HTMLInputElement)) return;
+  if (el.hasAttribute('data-mobile')) {
+    el.value = formatMobile(el.value);
+    el.setCustomValidity(el.value && !/^03\d{2} \d{7}$/.test(el.value) ? 'Enter an 11-digit mobile number, e.g. 0300 1234567' : '');
+    digitHint(el, 11, 'starts with 03');
+  } else if (el.hasAttribute('data-cnic')) {
+    const d = el.value.replace(/\D/g, '').slice(0, 13);
+    el.value = [d.slice(0, 5), d.slice(5, 12), d.slice(12)].filter(Boolean).join('-');
+    el.setCustomValidity(el.value && !/^[1-7]\d{4}-\d{7}-\d$/.test(el.value) ? 'Enter the 13-digit CNIC number, e.g. 35202-1234567-1' : '');
+    digitHint(el, 13, 'starts with 1–7');
+  }
+});
 
 function shareText(text) {
   if (nativeApp && nativeApp.share) { nativeApp.share(text); return; }
@@ -1841,7 +1873,7 @@ function profileFields(u = {}) {
   const sel = (v, cur) => (v === cur ? 'selected' : '');
   return `
     <div class="field"><label for="pn">Full name</label><input id="pn" name="name" value="${esc(u.name)}" required></div>
-    <div class="field"><label for="pp">Phone (shared only with confirmed co-travellers)</label><input id="pp" name="phone" type="tel" placeholder="+92 3xx xxxxxxx" value="${esc(u.phone)}" required></div>
+    <div class="field"><label for="pp">Phone (shared only with confirmed co-travellers)</label><input id="pp" name="phone" ${mobileAttrs} value="${esc(u.phone)}" required></div>
     <div class="row two">
       <div class="field"><label for="pt">I am a</label><select id="pt" name="traveler_type" required>
         <option value="professional" ${sel('professional', u.traveler_type)}>💼 Working professional</option>
@@ -2084,7 +2116,9 @@ views['verify-id'] = async (page, q) => {
     <p class="muted">Takes 2 minutes. Only the ABC Rides team sees these photos; other members just see a ✔ Verified badge.</p>
     <form id="idv" class="card">
       ${idDone ? '' : `
-      <div class="field"><label for="cnic">CNIC number</label><input id="cnic" name="cnic_number" inputmode="numeric" placeholder="35202-1234567-1" required></div>
+      <div class="field"><label for="cnic">CNIC number (13 digits, as on your card)</label><input id="cnic" name="cnic_number" ${cnicAttrs} required></div>
+        <div class="field"><label for="idphone">Your mobile number (11 digits)</label><input id="idphone" name="phone_number" ${mobileAttrs} required>
+          <span class="small muted">Type the number you use; it must match the CNIC holder.</span></div>
       <div class="row two">
         ${photoField('cnic_front', 'CNIC front', { capture: 'environment' })}
         ${photoField('cnic_back', 'CNIC back', { capture: 'environment' })}
@@ -2095,12 +2129,12 @@ views['verify-id'] = async (page, q) => {
       <p class="muted small" style="margin-top:8px">🔒 One account per CNIC. Fake or someone else’s documents lead to a permanent ban.</p>
     </form>`;
   const form = $('#idv', page);
-  if (form.cnic_number) formatCnicInput(form.cnic_number);
+
   const photos = bindPhotos(form);
   onSubmit(form, async (d) => {
     if (!idDone) requirePhotos(photos, ['cnic_front', 'cnic_back', 'selfie']);
     if (idDone) requirePhotos(photos, ['student_card']);
-    me = await api('/me/verification', { method: 'POST', body: { cnic_number: d.cnic_number, ...photos } });
+    me = await api('/me/verification', { method: 'POST', body: { cnic_number: d.cnic_number, phone_number: d.phone_number, ...photos } });
     toast('Submitted! We’ll review it soon.');
     location.hash = `#${q.next || '/profile'}`;
   });
@@ -2275,7 +2309,9 @@ views.driver = async (page) => {
       ${needId ? `
       <div class="card">
         <h3><span class="step">1</span> Your identity</h3>
-        <div class="field"><label for="cnic">CNIC number</label><input id="cnic" name="cnic_number" inputmode="numeric" placeholder="35202-1234567-1" required></div>
+        <div class="field"><label for="cnic">CNIC number (13 digits, as on your card)</label><input id="cnic" name="cnic_number" ${cnicAttrs} required></div>
+        <div class="field"><label for="idphone">Your mobile number (11 digits)</label><input id="idphone" name="phone_number" ${mobileAttrs} required>
+          <span class="small muted">Type the number you use; it must match the CNIC holder.</span></div>
         <div class="row two">
           ${photoField('cnic_front', 'CNIC front', { capture: 'environment' })}
           ${photoField('cnic_back', 'CNIC back', { capture: 'environment' })}
@@ -2301,12 +2337,12 @@ views.driver = async (page) => {
   const form = $('#drv', page);
   if (!form) return;
   bindCarFields(form);
-  if (form.cnic_number) formatCnicInput(form.cnic_number);
+
   const photos = bindPhotos(form);
   onSubmit(form, async (d) => {
     requirePhotos(photos, [...(needId ? ['cnic_front', 'cnic_back', 'selfie'] : []), 'licence_photo', 'vehicle_photo', 'registration_photo']);
     if (needId) {
-      await api('/me/verification', { method: 'POST', body: { cnic_number: d.cnic_number, cnic_front: photos.cnic_front, cnic_back: photos.cnic_back, selfie: photos.selfie } });
+      await api('/me/verification', { method: 'POST', body: { cnic_number: d.cnic_number, phone_number: d.phone_number, cnic_front: photos.cnic_front, cnic_back: photos.cnic_back, selfie: photos.selfie } });
     }
     me = await api('/me/driver', {
       method: 'POST',
@@ -2390,7 +2426,7 @@ views.profile = async (page) => {
       <p class="muted small">Used by the SOS button during a trip.</p>
       <div class="row two">
         <div class="field"><label>Name</label><input name="emergency_name" value="${esc(me.emergency_name)}" placeholder="e.g. Ammi"></div>
-        <div class="field"><label>Phone</label><input name="emergency_phone" type="tel" value="${esc(me.emergency_phone)}" placeholder="+92 3xx xxxxxxx"></div>
+        <div class="field"><label>Phone</label><input name="emergency_phone" ${mobileAttrs} value="${esc(me.emergency_phone)}"></div>
       </div>
       <button class="btn block" type="submit">Save</button>
     </form>

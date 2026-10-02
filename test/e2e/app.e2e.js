@@ -183,8 +183,13 @@ test('1b. onboarding: driver wizard, student card, admin approval', async () => 
   await sana.go('/offer', 'text=Register as a driver');
   await sana.page.click('text=Register as a driver');
   await sana.page.waitForSelector('#drv');
-  await sana.page.fill('#cnic', '3520212345671');
-  assert.equal(await sana.page.inputValue('#cnic'), '35202-1234567-1', 'CNIC is formatted as you type');
+  await sana.page.fill('#cnic', '3520212345672');
+  assert.equal(await sana.page.inputValue('#cnic'), '35202-1234567-2', 'CNIC is formatted as you type');
+  await sana.page.fill('#idphone', '+923001110001');
+  assert.equal(await sana.page.inputValue('#idphone'), '0300 1110001', 'mobile is formatted as you type');
+  await sana.page.fill('#idphone', '0300 111000');
+  assert.match(await sana.page.textContent('#idphone + .digit-hint'), /10\/11 digits/);
+  await sana.page.fill('#idphone', '03001110001');
   await sana.page.fill('#lic', 'LHR-998877');
   await sana.page.selectOption('#drv [name=car_make]', 'Honda');
   await sana.page.selectOption('#drv [name=car_model]', 'City');
@@ -204,6 +209,7 @@ test('1b. onboarding: driver wizard, student card, admin approval', async () => 
   const ali = users['Ali Student'];
   await ali.go('/verify-id', '#idv');
   await ali.page.fill('#cnic', '35202-7654321-3');
+  await ali.page.fill('#idphone', '0300 1110002');
   await addPhotos(ali.page, ['cnic_front', 'cnic_back', 'selfie', 'student_card']);
   await ali.page.click('#idv [type=submit]');
   await ali.page.waitForSelector('text=Account setup');
@@ -213,7 +219,7 @@ test('1b. onboarding: driver wizard, student card, admin approval', async () => 
   await admin.go('/admin?tab=verify', '[data-user]');
   assert.equal(await admin.page.locator('#admin-body [data-user]').count(), 2);
   const sanaCard = admin.page.locator('[data-user]', { hasText: 'Sana Driver' });
-  assert.match(await sanaCard.textContent(), /identity \+ driver[\s\S]*35202-1234567-1[\s\S]*LHR-998877[\s\S]*Honda City 2021, Silver · LEA-2468/);
+  assert.match(await sanaCard.textContent(), /identity \+ driver[\s\S]*35202-1234567-2[\s\S]*LHR-998877[\s\S]*Honda City 2021, Silver · LEA-2468/);
   await admin.page.waitForFunction(() => document.querySelectorAll('img.doc[src^="blob:"]').length === 10, null, { timeout: 15000 });
   await sanaCard.locator('[data-action=decline]').click();
   await admin.toast(/write a note/);
@@ -467,11 +473,12 @@ test('12. ID verification: one account per CNIC; a rejection tells the user what
   await zara.go('/profile', 'text=Account setup');
   await zara.page.click('.setup-row:has-text("Identity")');
   await zara.page.waitForSelector('#idv');
-  // Ali already registered this CNIC.
+  // Ali's CNIC: a man's (odd last digit), so it can't be Zara's.
   await zara.page.fill('#cnic', '35202-7654321-3');
+  await zara.page.fill('#idphone', '0300 1110003');
   await addPhotos(zara.page, ['cnic_front', 'cnic_back', 'selfie']);
   await zara.page.click('#idv [type=submit]');
-  await zara.toast(/already registered with another account/);
+  await zara.toast(/even for women/);
   await zara.page.fill('#cnic', '61101-5556667-8');
   await zara.page.click('#idv [type=submit]');
   await zara.page.waitForSelector('text=Account setup');

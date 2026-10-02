@@ -44,8 +44,9 @@ let cnicCounter = 1000000;
 const uniqueCnic = () => `35202-${cnicCounter++}-1`;
 
 async function submitIdentity(u, extra = {}) {
+  const { phone } = (await call('GET', '/me', { token: u.token })).body;
   return call('POST', '/me/verification', {
-    token: u.token, body: { cnic_number: uniqueCnic(), cnic_front: PNG, cnic_back: PNG, selfie: PNG, ...extra },
+    token: u.token, body: { cnic_number: uniqueCnic(), phone_number: phone, cnic_front: PNG, cnic_back: PNG, selfie: PNG, ...extra },
   });
 }
 
@@ -125,26 +126,46 @@ test('onboarding gates: email before booking, approval before posting rides', as
   assert.equal(res.body.code, 'email_unverified');
 });
 
-test('identity verification: CNIC checks, real images, one account per CNIC', async () => {
-  const u = await register({ phone: uniquePhone(), traveler_type: 'student' });
-  let res = await call('POST', '/me/verification', { token: u.token, body: { cnic_number: '123', cnic_front: PNG, cnic_back: PNG, selfie: PNG } });
-  assert.match(res.body.error, /CNIC number must look like/);
-  res = await call('POST', '/me/verification', { token: u.token, body: { cnic_number: '35202-7654321-9', cnic_front: PNG, cnic_back: PNG } });
+test('identity verification: CNIC and mobile number typed and checked, real images, one account per CNIC', async () => {
+  const u = await register({ phone: uniquePhone(), traveler_type: 'student', gender: 'male' });
+  const send = (body) => call('POST', '/me/verification', { token: u.token, body: { cnic_front: PNG, cnic_back: PNG, selfie: PNG, ...body } });
+  const mobile = '0321 4445566';
+  assert.match((await send({ cnic_number: '123', phone_number: mobile })).body.error, /CNIC number must have 13 digits/);
+  assert.match((await send({ cnic_number: '35202-765432199', phone_number: mobile })).body.error, /13 digits/, '14 digits');
+  assert.match((await send({ cnic_number: '95202-7654321-9', phone_number: mobile })).body.error, /starts with 1 to 7/);
+  assert.match((await send({ cnic_number: '35202-0000000-9', phone_number: mobile })).body.error, /looks invalid/);
+  assert.match((await send({ cnic_number: '35202-7654321-8', phone_number: mobile })).body.error, /odd for men/);
+  assert.match((await send({ cnic_number: '35202-7654321-9' })).body.error, /Mobile number is required/);
+  for (const bad of ['0321 444556', '0321 44455667', '0421 4445566', '12345', 'abc 03214445566']) {
+    assert.match((await send({ cnic_number: '35202-7654321-9', phone_number: bad })).body.error, /11 digits/, bad);
+  }
+  let res = await send({ cnic_number: '35202-7654321-9', phone_number: mobile, selfie: undefined });
   assert.match(res.body.error, /Selfie/);
-  res = await call('POST', '/me/verification', { token: u.token, body: { cnic_number: '35202-7654321-9', cnic_front: PNG, cnic_back: FAKE_PNG, selfie: PNG } });
+  res = await send({ cnic_number: '35202-7654321-9', phone_number: mobile, cnic_back: FAKE_PNG });
   assert.match(res.body.error, /JPG, PNG or WebP/, 'file contents are checked, not just the claimed type');
 
-  res = await call('POST', '/me/verification', {
-    token: u.token, body: { cnic_number: '35202-7654321-9', cnic_front: PNG, cnic_back: PNG, selfie: PNG, student_card: PNG },
-  });
-  assert.equal(res.status, 200);
+  res = await send({ cnic_number: '35202-7654321-9', phone_number: '+92-321-4445566', student_card: PNG });
+  assert.equal(res.status, 200, JSON.stringify(res.body));
   assert.equal(res.body.verification_status, 'pending');
   assert.equal(res.body.student_status, 'pending');
   assert.equal(res.body.cnic_masked, '35202-*******-9');
+  assert.equal(res.body.phone, '0321 4445566', 'the typed number is saved in one format');
 
-  const other = await register({ phone: uniquePhone() });
-  res = await call('POST', '/me/verification', { token: other.token, body: { cnic_number: '3520276543219', cnic_front: PNG, cnic_back: PNG, selfie: PNG } });
-  assert.equal(res.status, 409);
+  const other = await register({ phone: uniquePhone(), gender: 'male' });
+  const sendOther = (body) => call('POST', '/me/verification', { token: other.token, body: { cnic_front: PNG, cnic_back: PNG, selfie: PNG, ...body } });
+  assert.equal((await sendOther({ cnic_number: '3520276543219', phone_number: '0300 7778889' })).status, 409, 'same CNIC');
+  const samePhone = await sendOther({ cnic_number: '35202-7654322-1', phone_number: '03214445566' });
+  assert.equal(samePhone.status, 409);
+  assert.match(samePhone.body.error, /mobile number is already used/);
+
+  // Women's CNICs end in an even digit.
+  const woman = await register({ phone: uniquePhone(), gender: 'female' });
+  res = await call('POST', '/me/verification', { token: woman.token, body: { cnic_number: '35202-7654323-3', phone_number: '0333 1112223', cnic_front: PNG, cnic_back: PNG, selfie: PNG } });
+  assert.match(res.body.error, /even for women/);
+
+  // Sign-up and profile need a real mobile number too.
+  assert.match((await call('POST', '/auth/register', { body: { name: 'X', email: 'x1@test.pk', phone: '1234567', password: 'secret123', traveler_type: 'traveler', accept_terms: true } })).body.error, /11 digits/);
+  assert.match((await call('PATCH', '/me', { token: u.token, body: { emergency_phone: '021 1234567' } })).body.error, /Emergency contact number/);
 
   const queue = (await call('GET', '/admin/verifications', { token: admin.token })).body;
   const item = queue.find((q) => q.id === u.user.id);

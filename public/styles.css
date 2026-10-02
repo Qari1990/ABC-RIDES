@@ -502,3 +502,5 @@ table.earn th { color: var(--muted); font-weight: 650; font-size: .75rem; text-t
 .terms-points li { margin-bottom: 6px; }
 table.hiw td, table.hiw th { white-space: normal; }
 table.hiw td:not(:first-child) { white-space: nowrap; text-align: right; }
+.digit-hint { display: block; margin-top: 4px; color: var(--muted); }
+.digit-hint.ok { color: var(--ok); font-weight: 600; }

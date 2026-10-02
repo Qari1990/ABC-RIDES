@@ -51,10 +51,10 @@ test('driver offers on a request; passenger accepts: ride + confirmed booking, f
 
   const ride = (await call('GET', `/rides/${accepted.body.ride_id}`, { token: passenger.token })).body;
   assert.equal(ride.my_booking.status, 'confirmed');
-  assert.equal(ride.driver.phone, '+92 300 2220002', 'passenger sees the driver phone');
+  assert.equal(ride.driver.phone, '0300 2220002', 'passenger sees the driver phone');
   assert.equal(ride.seats_left, 2, 'two spare seats for other passengers');
   const asDriver = (await call('GET', `/rides/${accepted.body.ride_id}`, { token: driverA.token })).body;
-  assert.equal(asDriver.bookings[0].passenger_phone, '+92 300 1110001', 'driver sees the passenger phone');
+  assert.equal(asDriver.bookings[0].passenger_phone, '0300 1110001', 'driver sees the passenger phone');
   const search = (await call('GET', '/rides?from=Lahore&to=Islamabad')).body;
   assert.ok(search.some((r) => r.id === accepted.body.ride_id), 'spare seats are searchable');
 

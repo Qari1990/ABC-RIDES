@@ -10,13 +10,13 @@ const { notify } = require('../notify');
 const { emailConfigured, sendEmail } = require('../email');
 const { decodeImage, saveDocuments } = require('../uploads');
 const { selfUser } = require('./users');
+const { normalizePhone, validMobile, validCnic } = require('../phone');
 const { validateVehicle } = require('../cars');
 
 const CODE_TTL_MS = 10 * 60 * 1000;
 const RESEND_AFTER_MS = 60 * 1000;
 const MAX_SENDS_PER_HOUR = 5;
 const MAX_ATTEMPTS = 5;
-const CNIC_RE = /^\d{5}-?\d{7}-?\d$/;
 
 const hashCode = (userId, code) => crypto.createHash('sha256').update(`${userId}:${code}`).digest('hex');
 const formatCnic = (digits) => `${digits.slice(0, 5)}-${digits.slice(5, 12)}-${digits.slice(12)}`;
@@ -107,13 +107,17 @@ module.exports = function onboardingRouter(db, { uploadDir }) {
     const images = {};
     let cnic = null;
 
+    let phone = null;
     if (u.verification_status !== 'verified') {
-      const raw = str(b.cnic_number, 'CNIC number', { required: true, max: 15 });
-      if (!CNIC_RE.test(raw)) throw bad('CNIC number must look like 35202-1234567-1');
-      cnic = raw.replace(/-/g, '');
+      // Both typed by hand, checked for length and shape, then checked by our team against the photos.
+      cnic = validCnic(str(b.cnic_number, 'CNIC number', { required: true, max: 15 }), u.gender);
+      phone = validMobile(str(b.phone_number, 'Mobile number', { required: true, max: 20 }));
       if (db.prepare('SELECT 1 FROM users WHERE cnic = ? AND id != ?').get(cnic, u.id)) {
         throw new HttpError(409, 'This CNIC is already registered with another account');
       }
+      const samePhone = db.prepare(`SELECT phone FROM users WHERE id != ? AND verification_status IN ('pending', 'verified')`).all(u.id)
+        .some((x) => normalizePhone(x.phone) === normalizePhone(phone));
+      if (samePhone) throw new HttpError(409, 'This mobile number is already used to verify another account');
       images.cnic_front = decodeImage(b.cnic_front, 'CNIC front');
       images.cnic_back = decodeImage(b.cnic_back, 'CNIC back');
       images.selfie = decodeImage(b.selfie, 'Selfie');
@@ -126,6 +130,9 @@ module.exports = function onboardingRouter(db, { uploadDir }) {
     if (cnic) {
       db.prepare(`UPDATE users SET cnic = ?, verification_status = 'pending', verification_doc_type = 'cnic',
         verification_note = NULL WHERE id = ?`).run(cnic, u.id);
+      if (normalizePhone(phone) !== normalizePhone(u.phone)) {
+        db.prepare('UPDATE users SET phone = ?, phone_verified = 0, verified_phone = NULL WHERE id = ?').run(phone, u.id);
+      }
     }
     if (images.student_card) db.prepare(`UPDATE users SET student_status = 'pending' WHERE id = ?`).run(u.id);
     notifyAdmins(db, 'New verification request', `${u.name} submitted ${Object.keys(images).join(', ').replace(/_/g, ' ')}`);

@@ -167,7 +167,7 @@ test('change password signs out other devices; profile fields can be cleared', a
   const patched = await call('PATCH', '/me', { token: u.token, body: { organization: '', name: '' } });
   assert.equal(patched.body.organization, null);
   assert.equal(patched.body.name, u.user.name, 'required fields are not cleared');
-  assert.equal(patched.body.emergency_phone, '+92 300 9999999');
+  assert.equal(patched.body.emergency_phone, '0300 9999999', 'saved as 0300 1234567');
 });
 
 test('travel time is estimated from the cities, can be overridden, and gives an arrival time', async () => {

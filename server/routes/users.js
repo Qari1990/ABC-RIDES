@@ -2,7 +2,7 @@ const express = require('express');
 const { hashPassword, verifyPassword, createSession, requireUser } = require('../auth');
 const { HttpError, bad, str, oneOf } = require('../errors');
 const { rateLimiter } = require('../security');
-const { normalizePhone } = require('../phone');
+const { normalizePhone, validMobile } = require('../phone');
 const { getSettings } = require('../settings');
 const { freeConfirmationsLeft } = require('../wallet');
 const { vapidKeys, saveSubscription, saveAppToken } = require('../push');
@@ -11,7 +11,6 @@ const { shapeVehicle } = require('../cars');
 
 const TRAVELER_TYPES = ['professional', 'student', 'traveler'];
 const GENDERS = ['male', 'female', 'other'];
-const PHONE_RE = /^\+?[0-9 -]{7,20}$/;
 
 // Comma-separated list of emails that get the admin role.
 function adminEmails() {
@@ -84,8 +83,8 @@ function profileFields(body, { partial }) {
     emergency_name: str(body.emergency_name, 'Emergency contact name', { max: 80 }),
     emergency_phone: str(body.emergency_phone, 'Emergency contact phone', { max: 20 }),
   };
-  if (fields.phone && !PHONE_RE.test(fields.phone)) throw bad('Phone number looks invalid');
-  if (fields.emergency_phone && !PHONE_RE.test(fields.emergency_phone)) throw bad('Emergency contact phone looks invalid');
+  if (fields.phone) fields.phone = validMobile(fields.phone);
+  if (fields.emergency_phone) fields.emergency_phone = validMobile(fields.emergency_phone, 'Emergency contact number');
   return fields;
 }
 

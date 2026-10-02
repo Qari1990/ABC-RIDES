@@ -72,11 +72,11 @@ test('offer, search and book a ride with student discount and approval', async (
 
   const detail = await call('GET', `/rides/${ride.id}`, { token: student.token });
   assert.equal(detail.body.seats_left, 1);
-  assert.equal(detail.body.driver.phone, '+92 300 0000000');
+  assert.equal(detail.body.driver.phone, '0300 0000000');
 
   const driverView = await call('GET', `/rides/${ride.id}`, { token: driver.token });
   assert.equal(driverView.body.bookings.length, 1);
-  assert.equal(driverView.body.bookings[0].passenger_phone, '+92 300 0000000');
+  assert.equal(driverView.body.bookings[0].passenger_phone, '0300 0000000');
 
   const cancelled = await call('POST', `/bookings/${booking.body.id}/cancel`, { token: student.token });
   assert.equal(cancelled.body.status, 'cancelled');
