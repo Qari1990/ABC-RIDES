@@ -17,6 +17,7 @@ mkdir -p build
 zipalign -f -p 4 "$IN" build/dist-aligned.apk
 apksigner sign --ks "$KEYSTORE" --ks-pass "pass:$KEYSTORE_PASS" --ks-key-alias "$KEY_ALIAS" \
   --min-sdk-version "$(sed -n 's/^minSdk=//p' app.properties)" --out build/abc-rides-release.apk build/dist-aligned.apk
-apksigner verify build/abc-rides-release.apk
+# Warnings about META-INF files are expected (v2/v3 signatures cover the whole file).
+out=$(apksigner verify build/abc-rides-release.apk 2>&1) || { echo "$out"; exit 1; }
 cp build/abc-rides-release.apk ../public/downloads/abc-rides.apk
 echo "==> Signed and published to public/downloads/abc-rides.apk"
