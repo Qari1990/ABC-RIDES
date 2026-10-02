@@ -762,9 +762,16 @@ test('18. admin overview, and the Android "change server" hook', async () => {
   assert.match(stats, /0\s*Open reports/);
 
   const ali = users['Ali Student'];
-  await ali.go('/profile', '[data-action=server]');
+  await ali.go('/profile', '[data-action=logout]');
+  assert.equal(await ali.page.locator('[data-action=server]').count(), 0, 'only admins can change the server');
+  // In the Android app (Ali's browser fakes it) an admin can switch servers.
+  const aliId = db.prepare(`SELECT id FROM users WHERE name = 'Ali Student'`).get().id;
+  db.prepare(`UPDATE users SET role = 'admin' WHERE id = ?`).run(aliId);
+  await ali.page.evaluate(() => render());
+  await ali.page.waitForSelector('[data-action=server]');
   await ali.page.click('[data-action=server]');
   assert.deepEqual((await ali.page.evaluate(() => window.bridgeCalls)).at(-1), ['changeServer']);
+  db.prepare(`UPDATE users SET role = 'user' WHERE id = ?`).run(aliId);
 });
 
 test('no JavaScript errors in any page', () => {

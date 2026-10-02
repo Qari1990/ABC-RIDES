@@ -1869,14 +1869,13 @@ views.login = async (page, q) => {
       <p class="small" style="margin:12px 0 0;text-align:center"><a href="#/forgot">Forgot password?</a></p>
     </form>
     <p class="muted">New here? <a href="#/register${q.next ? `?next=${encodeURIComponent(q.next)}` : ''}">Create an account</a></p>
-    ${nativeApp ? '<p class="muted small">Connected to the wrong server? <a href="#" data-action="server">Change server</a></p>' : ''}`;
+`;
   onSubmit($('#login', page), async (d) => {
     const res = await api('/auth/login', { method: 'POST', body: d });
     store.token = res.token; me = res.user;
     refreshUnread();
     location.hash = `#${q.next || '/'}`;
   });
-  onClick(page, (action) => { if (action === 'server') nativeApp.changeServer(); });
 };
 
 views.forgot = async (page) => {
@@ -2399,7 +2398,7 @@ views.profile = async (page) => {
       </form>
     </details>
     <div class="actions">
-      ${nativeApp ? '<button class="btn ghost" data-action="server">🌐 Change server</button>' : ''}
+      ${nativeApp && me.role === 'admin' ? '<button class="btn ghost" data-action="server">🌐 Change server</button>' : ''}
       <button class="btn ghost" data-action="logout">Log out</button>
     </div>
     <p class="small muted legal-links"><a href="#/how-it-works">How fares &amp; reliability work</a> · <a href="privacy.html">Privacy policy</a> · <a href="terms.html">Terms</a> · <a href="download.html">Get the app</a></p>`;
@@ -2428,7 +2427,7 @@ views.profile = async (page) => {
     location.hash = '#/';
   });
   onClick(page, async (action) => {
-    if (action === 'server') nativeApp.changeServer();
+    if (action === 'server' && me.role === 'admin') nativeApp.changeServer();
     if (action === 'push-on') { await enablePush(); toast('Notifications are on for this device'); render(); }
     if (action === 'push-off') { await disablePush(); toast('Notifications turned off'); render(); }
     if (action === 'logout') {
