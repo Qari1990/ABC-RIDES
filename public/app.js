@@ -2411,6 +2411,12 @@ views.profile = async (page) => {
         <button class="btn danger" type="submit">Delete my account</button>
       </form>
     </details>
+    <div class="card" id="app-version">
+      <h3>App version</h3>
+      <p class="small muted" id="version-line">${nativeApp ? `Android app ${typeof nativeApp.appVersion === 'function' ? `build ${esc(nativeApp.appVersion())}` : '(older version)'} · ` : ''}web ${esc(settings.build || '')}</p>
+      <button class="btn small ghost" data-action="check-update">🔄 Check for updates</button>
+      <div id="update-result" class="small" style="margin-top:8px"></div>
+    </div>
     <div class="actions">
       ${nativeApp && me.role === 'admin' ? '<button class="btn ghost" data-action="server">🌐 Change server</button>' : ''}
       <button class="btn ghost" data-action="logout">Log out</button>
@@ -2442,6 +2448,20 @@ views.profile = async (page) => {
   });
   onClick(page, async (action) => {
     if (action === 'server' && me.role === 'admin') nativeApp.changeServer();
+    if (action === 'check-update') {
+      const out = $('#update-result', page);
+      out.textContent = 'Checking…';
+      const v = await latestVersions();
+      if (v.apk) {
+        out.innerHTML = `New Android app <b>${esc(v.apk.versionName)}</b> is available. <a class="btn small" href="${apkUrl(v.apk)}">Download & install</a>
+          <div class="muted">Your account and trips stay as they are.</div>`;
+      } else if (v.webNew) {
+        out.textContent = 'Updating…';
+        location.reload();
+      } else {
+        out.textContent = `✅ You have the latest version${v.apkLatest ? ` (app ${v.apkLatest.versionName})` : ''}.`;
+      }
+    }
     if (action === 'push-on') { await enablePush(); toast('Notifications are on for this device'); render(); }
     if (action === 'push-off') { await disablePush(); toast('Notifications turned off'); render(); }
     if (action === 'logout') {
@@ -2814,9 +2834,11 @@ views.admin = async (page, q) => {
                 <button class="btn small ghost" type="submit">Set reliability</button>
               </form>
             </details>
+            <div class="actions" style="margin-top:8px">
+              <button class="btn small ghost" data-action="temp-password" data-user="${u.id}" data-name="${esc(u.name)}">Temporary password</button>
+              ${u.role !== 'admin' ? `<button class="btn small ${u.suspended ? '' : 'danger'}" data-action="suspend" data-user="${u.id}" data-suspended="${u.suspended ? 0 : 1}">${u.suspended ? 'Unsuspend' : 'Suspend'}</button>` : ''}
+            </div>
           </div>
-          <button class="btn small ghost" data-action="temp-password" data-user="${u.id}" data-name="${esc(u.name)}">Temporary password</button>
-          ${u.role !== 'admin' ? `<button class="btn small ${u.suspended ? '' : 'danger'}" data-action="suspend" data-user="${u.id}" data-suspended="${u.suspended ? 0 : 1}">${u.suspended ? 'Unsuspend' : 'Suspend'}</button>` : ''}
         </div>
       </div>`).join('') || '<div class="card empty">No users found.</div>'}`;
     onSubmit($('#user-search', body), (d) => { location.hash = `#/admin?tab=users&q=${encodeURIComponent(d.q)}`; });
@@ -2935,25 +2957,48 @@ function pushCard(state) {
 // Screens and features update by themselves (they come from the server). The
 // app shell itself changes rarely; when a newer APK is published, offer it.
 let updateDismissed = false;
-async function checkAppUpdate() {
-  if (!nativeApp || updateDismissed) return;
-  const latest = await fetch('/downloads/version.json', { cache: 'no-store' }).then((r) => (r.ok ? r.json() : null)).catch(() => null);
+// What is newer on the server: the Android app itself (a new APK) and/or the
+// web app inside it (new screens, which only need a refresh).
+async function latestVersions() {
+  const [apk, server] = await Promise.all([
+    nativeApp ? fetch('/downloads/version.json', { cache: 'no-store' }).then((r) => (r.ok ? r.json() : null)).catch(() => null) : null,
+    fetch('/api/settings', { cache: 'no-store' }).then((r) => (r.ok ? r.json() : null)).catch(() => null),
+  ]);
   // Version 1.5 (code 6) and older can't report their version.
-  const current = typeof nativeApp.appVersion === 'function' ? Number(nativeApp.appVersion()) : 6;
+  const current = nativeApp ? (typeof nativeApp.appVersion === 'function' ? Number(nativeApp.appVersion()) : 6) : null;
+  return {
+    apk: apk && apk.versionCode > current ? apk : null,
+    apkCurrent: current,
+    apkLatest: apk,
+    webNew: !!(server && server.build && settings.build && server.build !== settings.build),
+  };
+}
+
+function apkUrl(latest) {
+  // The explicit port makes older app versions open the link in the browser, which downloads it.
+  const port = location.protocol === 'https:' ? 443 : (location.port || 80);
+  return `${location.protocol}//${location.hostname}:${port}/${latest.url}?v=${latest.versionCode}`;
+}
+
+async function checkAppUpdate() {
+  if (updateDismissed) return;
+  const v = await latestVersions();
   let bar = $('#update-bar');
-  if (!latest || !(latest.versionCode > current)) { if (bar) bar.remove(); return; }
+  if (!v.apk && !v.webNew) { if (bar) bar.remove(); return; }
   if (!bar) {
     bar = document.createElement('div');
     bar.id = 'update-bar';
     bar.className = 'update-bar';
     document.body.insertBefore(bar, $('#view'));
   }
-  // The explicit port makes older app versions open the link in the browser, which downloads it.
-  const port = location.protocol === 'https:' ? 443 : (location.port || 80);
-  const url = `${location.protocol}//${location.hostname}:${port}/${latest.url}?v=${latest.versionCode}`;
-  bar.innerHTML = `${icon('sparkles')}<span><b>Update available: version ${esc(latest.versionName)}</b><br><span class="small">Download it and tap Install; your account and trips stay as they are.</span></span>
-    <a class="btn small" href="${url}">Update</a><button class="icon-btn" data-close aria-label="Later">×</button>`;
+  bar.innerHTML = v.apk
+    ? `${icon('sparkles')}<span><b>Update available: version ${esc(v.apk.versionName)}</b><br><span class="small">Download it and tap Install; your account and trips stay as they are.</span></span>
+    <a class="btn small" href="${apkUrl(v.apk)}">Update</a><button class="icon-btn" data-close aria-label="Later">×</button>`
+    : `${icon('sparkles')}<span><b>A new version of ABC Rides is ready</b><br><span class="small">Refresh to get the latest features and fixes.</span></span>
+    <button class="btn small" data-refresh>Refresh</button><button class="icon-btn" data-close aria-label="Later">×</button>`;
   bar.querySelector('[data-close]').addEventListener('click', () => { updateDismissed = true; bar.remove(); });
+  const refresh = bar.querySelector('[data-refresh]');
+  if (refresh) refresh.addEventListener('click', () => location.reload());
 }
 
 // ---- Error reporting --------------------------------------------------------
@@ -3198,4 +3243,5 @@ ready.then(() => {
   }
   refreshUnread();
   setInterval(refreshUnread, 15000);
+  setInterval(checkAppUpdate, 10 * 60000); // apps left open for hours still hear about new versions
 });

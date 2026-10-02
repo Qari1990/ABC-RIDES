@@ -33,8 +33,10 @@ Drivers who are already going between cities post their empty seats; passengers 
   to share, home pickup/drop) to a passenger's request. Accepting it creates the ride and a confirmed booking at
   once, charges both fees, and shows each the other's phone; other drivers' offers close, and spare seats go on
   sale to other passengers. Request cards show the distance, the passenger's price per km and the fair price.
-- **App updates**: the Android app checks `public/downloads/version.json` (written by `android/sign-dist.sh`)
-  and offers newer versions with an Update button; screens and features update without it.
+- **App updates**: screens and features come from the server, so every user gets them on the next open (nothing
+  is cached). An app left open notices a new version (checked when it comes back to the screen and every 10 minutes)
+  and shows a *Refresh* bar. A new Android APK (`public/downloads/version.json`, written by `android/sign-dist.sh`)
+  shows an *Update* bar with the download. **Profile → App version → Check for updates** does both by hand.
 - **Live updates**: ride lists, requests, trips, inbox and ride pages refresh themselves (every 20 s, when the
   app comes back to the screen, and when a new alert arrives), without disturbing a form being filled in.
 - **Search near your pickup point**: choose where you'll get on; rides are sorted by how close their stop is.

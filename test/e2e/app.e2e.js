@@ -774,6 +774,137 @@ test('18. admin overview, and the Android "change server" hook', async () => {
   db.prepare(`UPDATE users SET role = 'user' WHERE id = ?`).run(aliId);
 });
 
+test('19. private ride in a temporary car: a group books the whole car, then both review', async () => {
+  const sana = users['Sana Driver'];
+  const zara = users['Zara Traveller'];
+  const idOf = (u) => db.prepare('SELECT id FROM users WHERE email = ?').get(u.email).id;
+  db.prepare(`UPDATE users SET wallet_balance = 5000, reliability = 80 WHERE id IN (?, ?)`).run(idOf(sana), idOf(zara));
+  db.prepare(`UPDATE users SET verification_status = 'verified' WHERE id = ?`).run(idOf(zara));
+
+  await sana.go('/offer', '#offer');
+  await chooseRoute(sana.page, { from: 'Lahore', to: 'Islamabad', pickup: 'Thokar Niaz Baig', drop: 'Faizabad Interchange' });
+  await toStep(sana.page, 2);
+  await sana.page.fill('#ow', localDateTime(3, 9));
+  await sana.page.check('[name=ride_type][value=private]');
+  await sana.page.check('[name=car_choice][value=temp]');
+  await sana.page.selectOption('#temp-car [name=car_make]', 'KIA');
+  await sana.page.selectOption('#temp-car [name=car_model]', 'Sportage');
+  await sana.page.fill('#temp-car [name=car_year]', '2022');
+  await sana.page.fill('#temp-car [name=car_color]', 'Black');
+  await sana.page.fill('#temp-car [name=car_plate]', 'LEC-777');
+  await sana.page.check('[name=temp_vehicle_declaration]');
+  await toStep(sana.page, 3);
+  // Private fare for an SUV: Rs 18/km × 1.3.
+  assert.equal(await sana.page.inputValue('#ofk'), '23.4');
+  assert.match(await sana.page.textContent('#fare-hint'), /suv car/i);
+  await publish(sana.page);
+  await sana.page.waitForURL(/#\/ride\/\d+/);
+  const rideId = rideIdFromUrl(sana.page);
+  const ride = rideRow(rideId);
+  assert.equal(ride.private, 1);
+  assert.equal(ride.seats_total, 1);
+  assert.equal(ride.car_class, 'suv');
+  assert.equal(JSON.parse(ride.temp_vehicle).plate, 'LEC-777');
+
+  await zara.go(`/ride/${rideId}`, '#book');
+  assert.match(await zara.page.textContent('#view'), /Private ride[\s\S]*SUV/);
+  assert.match(await zara.page.textContent('#book'), /Book the whole car/);
+  await zara.page.selectOption('#bparty', '3');
+  await zara.page.click('#book [type=submit]');
+  await zara.page.waitForSelector('text=Whole car · 3 people');
+
+  await sana.go(`/ride/${rideId}`, '[data-action=confirm]');
+  assert.match(await sana.page.textContent('#view'), /whole car, 3 people/);
+  await sana.page.click('[data-action=confirm]');
+  await sana.page.waitForSelector('.badge.confirmed');
+
+  // The trip has happened: the driver marks it completed and both review.
+  db.prepare('UPDATE rides SET departure_at = ? WHERE id = ?').run(new Date(Date.now() - 6 * 36e5).toISOString(), rideId);
+  await sana.go(`/ride/${rideId}`, '[data-action=complete]');
+  await sana.page.click('[data-action=complete]');
+  await sana.page.waitForSelector('form.review');
+  await sana.page.selectOption('form.review [name=rating]', '5');
+  await sana.page.click('form.review [type=submit]');
+  await sana.toast(/Thanks for your review/);
+  await zara.go(`/ride/${rideId}`, 'form.review');
+  await zara.page.selectOption('form.review [name=rating]', '2');
+  await zara.page.click('form.review [type=submit]');
+  await zara.toast(/Thanks for your review/);
+  const rel = (u) => db.prepare('SELECT reliability FROM users WHERE id = ?').get(idOf(u)).reliability;
+  assert.equal(rel(zara), 80 + 2 + 1, 'completed trip +2, five stars +1');
+  assert.equal(rel(sana), 80 + 2 - 3, 'completed trip +2, two stars -3');
+});
+
+test('20. private car request: a driver offers a price for the whole car', async () => {
+  const omar = users['Omar Passenger'];
+  const sana = users['Sana Driver'];
+  const omarId = db.prepare('SELECT id FROM users WHERE email = ?').get(omar.email).id;
+  db.prepare(`UPDATE users SET verification_status = 'verified', wallet_balance = 5000 WHERE id = ?`).run(omarId);
+  const date = localDateTime(5, 0).slice(0, 10);
+  await omar.go(`/requests/new?from=Lahore&to=Islamabad&date=${date}`, '#rq');
+  await omar.page.check('[name=trip_type][value=private]');
+  assert.equal(await omar.page.textContent('#rq-seats-label'), 'People travelling');
+  await omar.page.selectOption('#rq [name=seats]', '3');
+  await omar.page.click('#rq [type=submit]');
+  await omar.page.waitForURL(/tab=requests/);
+  const reqId = db.prepare('SELECT id FROM ride_requests WHERE passenger_id = ? ORDER BY id DESC').get(omarId).id;
+  assert.equal(db.prepare('SELECT private FROM ride_requests WHERE id = ?').get(reqId).private, 1);
+
+  await sana.go(`/request-offer/${reqId}`, '#req-offer');
+  assert.match(await sana.page.textContent('#req-offer'), /Price for the whole car/);
+  await sana.page.fill('#rop', '9000');
+  await sana.page.click('#req-offer [type=submit]');
+  await sana.toast(/./);
+  await omar.go('/trips?tab=requests', '[data-action=accept-offer]');
+  assert.match(await omar.page.textContent('#list'), /Private car · 3 people[\s\S]*Rs 9,000[\s\S]*for the car/);
+  await omar.page.click('[data-action=accept-offer]');
+  await omar.page.waitForURL(/#\/ride\/\d+/);
+  const ride = rideRow(rideIdFromUrl(omar.page));
+  assert.equal(ride.private, 1);
+  assert.equal(ride.price_per_seat, 9000);
+  assert.match(await omar.page.textContent('#view'), /Whole car · 3 people/);
+});
+
+test('21. a permanent car change waits for admin approval', async () => {
+  const sana = users['Sana Driver'];
+  await sana.go('/driver', 'summary:has-text("Update or change my car")');
+  await sana.page.click('summary:has-text("Update or change my car")');
+  await sana.page.selectOption('#car-change [name=car_make]', 'Honda');
+  await sana.page.selectOption('#car-change [name=car_model]', 'Civic');
+  await sana.page.fill('#car-change [name=car_year]', '2023');
+  await sana.page.fill('#car-change [name=car_color]', 'Blue');
+  await sana.page.fill('#car-change [name=car_plate]', 'LED-2023');
+  await sana.page.fill('#car-change [name=reason]', 'Bought a new car');
+  await sana.page.check('#car-change [name=driver_declaration]');
+  await addPhotos(sana.page, ['vehicle_photo', 'registration_photo']);
+  await sana.page.click('#car-change [type=submit]');
+  await sana.page.waitForSelector('text=Car change under review');
+  const sanaId = db.prepare('SELECT id FROM users WHERE email = ?').get(sana.email).id;
+  assert.equal(db.prepare('SELECT model FROM vehicles WHERE user_id = ?').get(sanaId).model, 'City', 'old car stays until approved');
+
+  const admin = users.Admin;
+  await admin.go('/admin?tab=cars', 'text=Approve new car');
+  assert.match(await admin.page.textContent('#admin-body'), /LED-2023[\s\S]*Bought a new car/);
+  await admin.page.click('text=Approve new car');
+  await admin.toast(/New car approved/);
+  const v = db.prepare('SELECT model, plate, car_class FROM vehicles WHERE user_id = ?').get(sanaId);
+  assert.deepEqual({ ...v }, { model: 'Civic', plate: 'LED-2023', car_class: 'premium' });
+});
+
+test('22. updates: Profile → Check for updates, and a bar when a new version is out', async () => {
+  const ali = users['Ali Student']; // the Android app (an old build: no version reported)
+  await ali.go('/profile', '[data-action=check-update]');
+  await ali.page.click('[data-action=check-update]');
+  await ali.page.waitForSelector('text=Download & install');
+  const zara = users['Zara Traveller']; // the website
+  await zara.go('/profile', '[data-action=check-update]');
+  await zara.page.click('[data-action=check-update]');
+  await zara.page.waitForSelector('text=You have the latest version');
+  // The server got a new web version while the app was open.
+  await zara.page.evaluate(() => { settings.build = 'older'; return checkAppUpdate(); });
+  await zara.page.waitForSelector('#update-bar >> text=A new version of ABC Rides is ready');
+});
+
 test('no JavaScript errors in any page', () => {
   assert.deepEqual(errors, []);
 });
