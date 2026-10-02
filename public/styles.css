@@ -460,3 +460,23 @@ table.earn th { color: var(--muted); font-weight: 650; font-size: .75rem; text-t
 .legal-links { text-align: center; margin: 20px 0 8px; }
 .legal-links a { color: var(--muted); }
 .legal-links .i { width: 14px; height: 14px; vertical-align: -2px; }
+
+.request-points { display: grid; gap: 2px; margin-top: 8px; }
+
+/* ---- Maps ---- */
+.map { height: 260px; margin: 12px 0; border-radius: 14px; overflow: hidden; border: 1px solid var(--border); background: var(--surface-2); position: relative; z-index: 0; isolation: isolate; }
+.map.small { height: 220px; }
+.map-note { margin: -6px 0 10px; }
+.map-pin { display: grid; place-items: center; width: 28px; height: 28px; border-radius: 50%; background: #0b7a5e; color: #fff; font: 700 12px/1 Inter, system-ui, sans-serif; border: 2px solid #fff; box-shadow: 0 2px 6px rgba(0,0,0,.3); }
+.map-pin.start { background: #0b7a5e; }
+.map-pin.end { background: #0f172a; }
+.map-pin.off { background: #94a3b8; }
+.map-pin.extra { background: #fff; color: #0b7a5e; border-color: #0b7a5e; border-style: dashed; }
+.map-pin.home { background: #f59e0b; }
+.map-pin.choice { opacity: .8; transform: scale(.85); }
+.map-pin.chosen { background: #f59e0b; transform: scale(1.15); }
+.leaflet-container { font: 13px/1.4 Inter, system-ui, sans-serif; }
+.leaflet-container a { color: var(--brand); }
+@media (prefers-color-scheme: dark) {
+  .map .leaflet-tile-pane { filter: invert(1) hue-rotate(180deg) brightness(.95) contrast(.9); }
+}

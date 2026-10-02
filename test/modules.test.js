@@ -184,7 +184,7 @@ test('travel time is estimated from the cities, can be overridden, and gives an 
   const custom = (await call('POST', '/rides', { token: driver.token, body: rideBody({ duration_minutes: 300 }) })).body[0];
   assert.equal(custom.duration_minutes, 300);
 
-  const unknown = (await call('POST', '/rides', { token: driver.token, body: rideBody({ from_city: 'Chiniot' }) })).body[0];
+  const unknown = (await call('POST', '/rides', { token: driver.token, body: rideBody({ from_city: 'Tando Adam' }) })).body[0];
   assert.equal(unknown.duration_minutes, null);
   assert.equal(unknown.arrival_at, null);
 

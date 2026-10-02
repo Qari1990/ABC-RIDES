@@ -170,6 +170,15 @@ CREATE TABLE IF NOT EXISTS vehicles (
   updated_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
+-- One-time codes for "forgot password" (sent by SMS).
+CREATE TABLE IF NOT EXISTS reset_codes (
+  user_id     INTEGER PRIMARY KEY REFERENCES users(id),
+  code_hash   TEXT NOT NULL,
+  expires_at  TEXT NOT NULL,
+  attempts    INTEGER NOT NULL DEFAULT 0,
+  sent_at     TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS phone_codes (
   user_id       INTEGER PRIMARY KEY REFERENCES users(id),
   code_hash     TEXT NOT NULL,
@@ -197,6 +206,18 @@ CREATE TABLE IF NOT EXISTS route_distances (
   km          INTEGER NOT NULL,
   source      TEXT NOT NULL,
   updated_at  TEXT NOT NULL
+);
+
+-- Errors from phones/browsers and the server, shown to admins.
+CREATE TABLE IF NOT EXISTS error_log (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  source      TEXT NOT NULL CHECK (source IN ('app', 'server')),
+  message     TEXT NOT NULL,
+  detail      TEXT,
+  url         TEXT,
+  user_id     INTEGER,
+  user_agent  TEXT,
+  created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
 -- Admin-controlled policy (fees, booking mode, onboarding requirements).
@@ -241,6 +262,10 @@ CREATE UNIQUE INDEX IF NOT EXISTS users_verified_phone ON users (verified_phone)
 // Columns added after the first release. CREATE TABLE IF NOT EXISTS leaves
 // older databases untouched, so add any missing columns here.
 const ADDED_COLUMNS = {
+  ride_requests: {
+    from_place_id: 'INTEGER REFERENCES places(id)',
+    to_place_id: 'INTEGER REFERENCES places(id)',
+  },
   users: {
     role: `TEXT NOT NULL DEFAULT 'user'`,
     suspended: 'INTEGER NOT NULL DEFAULT 0',
@@ -294,8 +319,10 @@ function migrate(db) {
 }
 
 // Loads the built-in popular places the first time.
+// Adds built-in places that are missing, so new versions bring new points to
+// existing databases. Places an admin removed stay removed (they are only
+// marked inactive, so INSERT OR IGNORE skips them).
 function seedPlaces(db) {
-  if (db.prepare('SELECT COUNT(*) n FROM places').get().n) return;
   const insert = db.prepare('INSERT OR IGNORE INTO places (city, name, lat, lon) VALUES (?, ?, ?, ?)');
   for (const p of require('./places-data')) insert.run(...p);
 }

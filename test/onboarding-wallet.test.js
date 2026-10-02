@@ -412,3 +412,48 @@ test('security: login lockout and headers', async () => {
   assert.equal(page.headers.get('x-frame-options'), 'DENY');
   assert.equal(page.headers.get('x-content-type-options'), 'nosniff');
 });
+
+test('forgot password: off without SMS; with SMS a texted code sets a new password', async () => {
+  const u = await register({ email: 'forgetful@test.pk', phone: uniquePhone() });
+  await verifyPhone(u);
+  const phone = (await call('GET', '/me', { token: u.token })).body.phone;
+
+  // No SMS provider: reset would have to show the code on screen, so it is refused.
+  const off = await call('POST', '/auth/reset/send', { body: { phone } });
+  assert.equal(off.status, 503);
+  assert.equal(off.body.code, 'reset_unavailable');
+
+  // A fake SMS provider that remembers the last message.
+  const http = require('node:http');
+  let lastSms = null;
+  const sms = http.createServer((req, res) => { lastSms = new URL(req.url, 'http://x').searchParams.get('text'); res.end('ok'); }).listen(0);
+  await new Promise((r) => sms.once('listening', r));
+  process.env.SMS_GATEWAY_URL = `http://127.0.0.1:${sms.address().port}/send?to={to}&text={message}`;
+  try {
+    const unknown = await call('POST', '/auth/reset/send', { body: { phone: '0399 9999999' } });
+    assert.equal(unknown.status, 200, 'unknown numbers get the same answer');
+    assert.equal(lastSms, null);
+
+    assert.equal((await call('POST', '/auth/reset/send', { body: { phone } })).status, 200);
+    const code = lastSms.match(/\d{6}/)[0];
+    const bad = await call('POST', '/auth/reset/confirm', { body: { phone, code: code === '111111' ? '222222' : '111111', new_password: 'brandnew123' } });
+    assert.equal(bad.status, 400);
+    assert.equal((await call('POST', '/auth/reset/confirm', { body: { phone, code, new_password: 'brandnew123' } })).status, 204);
+
+    assert.equal((await call('GET', '/me', { token: u.token })).status, 401, 'old sessions are signed out');
+    assert.equal((await call('POST', '/auth/login', { body: { email: 'forgetful@test.pk', password: 'brandnew123' } })).status, 200);
+    assert.equal((await call('POST', '/auth/reset/confirm', { body: { phone, code, new_password: 'again12345' } })).status, 400, 'codes work once');
+  } finally {
+    delete process.env.SMS_GATEWAY_URL;
+    sms.close();
+  }
+});
+
+test('admin can set a temporary password', async () => {
+  const u = await register({ email: 'locked-out@test.pk' });
+  assert.equal((await call('POST', `/admin/users/${u.user.id}/temp-password`, { token: u.token })).status, 403);
+  const res = await call('POST', `/admin/users/${u.user.id}/temp-password`, { token: admin.token });
+  assert.equal(res.status, 200);
+  assert.ok(res.body.password.length >= 8);
+  assert.equal((await call('POST', '/auth/login', { body: { email: 'locked-out@test.pk', password: res.body.password } })).status, 200);
+});

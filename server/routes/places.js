@@ -37,7 +37,7 @@ module.exports = function placesRouter(db) {
       distance_km: km,
       duration_minutes: minutesFor(km),
       suggested_stops: suggestStops(db, stops[0], stops[stops.length - 1], activePlaces().filter((p) => !chosen.has(p.id)))
-        .map(({ id, city, name, km: along }) => ({ id, city, name, km: along })),
+        .map(({ id, city, name, lat, lon, km: along }) => ({ id, city, name, lat, lon, km: along })),
     });
   });
 

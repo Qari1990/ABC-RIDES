@@ -85,9 +85,9 @@ function seedDemo(db) {
     }
 
     db.prepare(`
-      INSERT INTO ride_requests (passenger_id, from_city, to_city, earliest_at, latest_at, seats, max_price, notes)
-      VALUES (?, 'Islamabad', 'Lahore', ?, ?, 1, 2500, 'Going home for the weekend, one backpack.')`)
-      .run(ids['ayesha@example.com'], at(5, 6), at(5, 22));
+      INSERT INTO ride_requests (passenger_id, from_city, to_city, earliest_at, latest_at, seats, max_price, notes, from_place_id, to_place_id)
+      VALUES (?, 'Islamabad', 'Lahore', ?, ?, 1, 2500, 'Going home for the weekend, one backpack.', ?, ?)`)
+      .run(ids['ayesha@example.com'], at(5, 6), at(5, 22), place.get('Islamabad', 'NUST (H-12)').id, place.get('Lahore', 'Thokar Niaz Baig').id);
   });
 }
 

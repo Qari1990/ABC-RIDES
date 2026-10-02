@@ -10,7 +10,8 @@ const adminRouter = require('./routes/admin');
 const onboardingRouter = require('./routes/onboarding');
 const walletRouter = require('./routes/wallet');
 const placesRouter = require('./routes/places');
-const { securityHeaders } = require('./security');
+const { securityHeaders, rateLimiter } = require('./security');
+const { logError } = require('./errorlog');
 
 // Photo uploads parse their own, larger bodies.
 const LARGE_BODY_PATHS = new Set(['/api/me/verification', '/api/me/driver']);
@@ -28,6 +29,14 @@ function createApp(db, { uploadDir = process.env.UPLOAD_DIR || path.join(__dirna
   const api = express.Router();
   api.use(loadUser(db));
   api.get('/health', (_req, res) => res.json({ ok: true }));
+  // Errors from the app on users' phones (see reportError in app.js).
+  const errorLimit = rateLimiter({ windowMs: 10 * 60 * 1000, max: 30, message: 'Too many error reports' });
+  api.post('/client-errors', (req, res) => {
+    errorLimit.check(req.ip);
+    const b = req.body || {};
+    logError(db, { source: 'app', message: b.message, detail: b.stack, url: b.url, userId: req.user && req.user.id, userAgent: req.get('user-agent') });
+    res.status(204).end();
+  });
   api.get('/cities', (_req, res) => res.json(CITIES));
   api.get('/route-estimate', (req, res) => res.json(estimateRoute(db, req.query.from, req.query.to)));
   api.use(usersRouter(db));
@@ -42,14 +51,19 @@ function createApp(db, { uploadDir = process.env.UPLOAD_DIR || path.join(__dirna
   app.use('/api', api);
 
   app.use(express.static(path.join(__dirname, '..', 'public')));
+  // Map library (Leaflet), served from our own domain.
+  app.use('/vendor/leaflet', express.static(path.join(path.dirname(require.resolve('leaflet/package.json')), 'dist'), { maxAge: '7d' }));
 
-  app.use((err, _req, res, _next) => {
+  app.use((err, req, res, _next) => {
     if (err.type === 'entity.parse.failed') return res.status(400).json({ error: 'Invalid JSON body' });
     if (err.type === 'entity.too.large') return res.status(413).json({ error: 'Upload is too large' });
     const status = err.status || 500;
-    if (status >= 500) console.error(err);
+    if (status >= 500 && !err.expected) {
+      console.error(err);
+      logError(db, { source: 'server', message: err.message, detail: err.stack, url: `${req.method} ${req.originalUrl}`, userId: req.user && req.user.id, userAgent: req.get('user-agent') });
+    }
     if (err.retryAfter) res.set('retry-after', String(err.retryAfter));
-    res.status(status).json({ error: status >= 500 ? 'Something went wrong' : err.message, ...(err.code && status < 500 ? { code: err.code } : {}) });
+    res.status(status).json({ error: status >= 500 && !err.expected ? 'Something went wrong' : err.message, ...(err.code && (status < 500 || err.expected) ? { code: err.code } : {}) });
   });
 
   return app;

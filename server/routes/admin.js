@@ -1,6 +1,7 @@
 const express = require('express');
+const crypto = require('node:crypto');
 const path = require('node:path');
-const { requireAdmin } = require('../auth');
+const { requireAdmin, hashPassword } = require('../auth');
 const { transaction } = require('../db');
 const { HttpError, bad, str, int } = require('../errors');
 const { notify } = require('../notify');
@@ -28,6 +29,15 @@ module.exports = function adminRouter(db, { uploadDir }) {
   });
   const countBy = (sql) => Object.fromEntries(db.prepare(sql).all().map((r) => [r.k, r.n]));
 
+  router.get('/errors', (_req, res) => {
+    res.json(db.prepare(`SELECT e.*, u.name AS user_name FROM error_log e LEFT JOIN users u ON u.id = e.user_id ORDER BY e.id DESC LIMIT 50`).all());
+  });
+
+  router.delete('/errors', (_req, res) => {
+    db.prepare('DELETE FROM error_log').run();
+    res.status(204).end();
+  });
+
   router.get('/stats', (_req, res) => {
     res.json({
       users: countBy('SELECT traveler_type k, COUNT(*) n FROM users GROUP BY traveler_type'),
@@ -45,6 +55,7 @@ module.exports = function adminRouter(db, { uploadDir }) {
       wallet_total: db.prepare('SELECT COALESCE(SUM(wallet_balance), 0) n FROM users').get().n,
       sms_configured: smsConfigured(),
       backup: backupStatus(),
+      errors_7d: db.prepare(`SELECT COUNT(*) n FROM error_log WHERE created_at > ?`).get(new Date(Date.now() - 7 * 864e5).toISOString()).n,
     });
   });
 
@@ -157,6 +168,16 @@ module.exports = function adminRouter(db, { uploadDir }) {
       }
     });
     res.json({ ok: true });
+  });
+
+  // For users who forgot their password while SMS reset is unavailable: the
+  // admin reads the temporary password to them after checking who they are.
+  router.post('/users/:id/temp-password', (req, res) => {
+    const user = getUser(req.params.id);
+    const password = crypto.randomBytes(6).toString('base64url').replace(/[-_]/g, 'x');
+    db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(hashPassword(password), user.id);
+    db.prepare('DELETE FROM sessions WHERE user_id = ?').run(user.id);
+    res.json({ password });
   });
 
   router.post('/users/:id/suspend', (req, res) => {

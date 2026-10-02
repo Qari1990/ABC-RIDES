@@ -2,7 +2,8 @@ const express = require('express');
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
-const { requireUser, verifyPassword } = require('../auth');
+const { requireUser, verifyPassword, hashPassword } = require('../auth');
+const { rateLimiter } = require('../security');
 const { transaction } = require('../db');
 const { HttpError, bad, str, int } = require('../errors');
 const { notify } = require('../notify');
@@ -59,7 +60,7 @@ module.exports = function onboardingRouter(db, { uploadDir }) {
         await sendSms(`+${normalizePhone(u.phone)}`, message);
       } catch (err) {
         console.error('SMS failed:', err.message);
-        throw new HttpError(502, 'Could not send the SMS right now. Please try again shortly.');
+        throw Object.assign(new HttpError(502, 'Could not send the SMS right now. Please try again shortly.'), { expected: true });
       }
       return res.json({ sent_to: u.phone });
     }
@@ -157,6 +158,63 @@ module.exports = function onboardingRouter(db, { uploadDir }) {
     db.prepare(`UPDATE users SET driver_status = 'pending', driver_note = NULL, licence_number = ? WHERE id = ?`).run(licence, u.id);
     notifyAdmins(db, 'New driver application', `${u.name}: ${vehicle.make} ${vehicle.model} (${vehicle.plate})`);
     res.json(selfUser(db, reload(u.id)));
+  });
+
+  // ---- Forgot password (code by SMS) ----------------------------------------
+  //
+  // Works for accounts with a verified phone. Without an SMS provider the code
+  // could only be shown on screen, which would let anyone take over any
+  // account, so reset is switched off and an admin sets a temporary password.
+  const resetLimit = rateLimiter({ windowMs: 60 * 60 * 1000, max: 10, message: 'Too many reset attempts. Please try again in an hour.' });
+
+  router.post('/auth/reset/send', async (req, res) => {
+    resetLimit.check(`send|${req.ip}`);
+    resetLimit.hit(`send|${req.ip}`);
+    if (!smsConfigured()) {
+      const err = new HttpError(503, 'Password reset by SMS is not switched on yet. Please contact ABC Rides support to reset your password.');
+      err.code = 'reset_unavailable';
+      err.expected = true; // a known state, not a crash: show the message, don't log it
+      throw err;
+    }
+    const phone = normalizePhone(str((req.body || {}).phone, 'Phone', { required: true, max: 30 }));
+    const u = phone && db.prepare('SELECT * FROM users WHERE verified_phone = ? AND suspended = 0').get(phone);
+    // Same answer whether or not the number has an account, so numbers can't be probed.
+    const reply = { sent: true, message: 'If this number has an ABC Rides account, a code is on its way.' };
+    if (!u) return res.json(reply);
+    const prev = db.prepare('SELECT * FROM reset_codes WHERE user_id = ?').get(u.id);
+    if (prev && Date.now() - new Date(prev.sent_at) < RESEND_AFTER_MS) return res.json(reply);
+    const code = String(crypto.randomInt(100000, 1000000));
+    db.prepare(`INSERT INTO reset_codes (user_id, code_hash, expires_at, attempts, sent_at) VALUES (?, ?, ?, 0, ?)
+      ON CONFLICT(user_id) DO UPDATE SET code_hash = excluded.code_hash, expires_at = excluded.expires_at, attempts = 0, sent_at = excluded.sent_at`)
+      .run(u.id, hashCode(u.id, code), new Date(Date.now() + CODE_TTL_MS).toISOString(), new Date().toISOString());
+    try {
+      await sendSms(`+${phone}`, `Your ABC Rides password reset code is ${code}. If you didn't ask for it, ignore this message.`);
+    } catch (err) {
+      console.error('SMS failed:', err.message);
+      throw Object.assign(new HttpError(502, 'Could not send the SMS right now. Please try again shortly.'), { expected: true });
+    }
+    res.json(reply);
+  });
+
+  router.post('/auth/reset/confirm', (req, res) => {
+    resetLimit.check(`confirm|${req.ip}`);
+    const b = req.body || {};
+    const phone = normalizePhone(str(b.phone, 'Phone', { required: true, max: 30 }));
+    if (typeof b.new_password !== 'string' || b.new_password.length < 8) throw bad('New password must be at least 8 characters');
+    const u = phone && db.prepare('SELECT * FROM users WHERE verified_phone = ?').get(phone);
+    const row = u && db.prepare('SELECT * FROM reset_codes WHERE user_id = ?').get(u.id);
+    const wrong = () => { resetLimit.hit(`confirm|${req.ip}`); return bad('The code is wrong or has expired. Please request a new one.'); };
+    if (!row || new Date(row.expires_at) < new Date() || row.attempts >= MAX_ATTEMPTS) throw wrong();
+    if (hashCode(u.id, String(b.code || '').trim()) !== row.code_hash) {
+      db.prepare('UPDATE reset_codes SET attempts = attempts + 1 WHERE user_id = ?').run(u.id);
+      throw wrong();
+    }
+    transaction(db, () => {
+      db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(hashPassword(b.new_password), u.id);
+      db.prepare('DELETE FROM reset_codes WHERE user_id = ?').run(u.id);
+      db.prepare('DELETE FROM sessions WHERE user_id = ?').run(u.id);
+    });
+    res.status(204).end();
   });
 
   // ---- Account deletion (required by Google Play) ---------------------------

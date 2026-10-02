@@ -189,3 +189,38 @@ test('delete account: needs the password and no upcoming trips, then anonymises'
   // The email can be used again for a fresh account.
   assert.equal((await register({ email: 'leaving@test.pk' })).user.email, 'leaving@test.pk');
 });
+
+test('ride requests can name pickup and drop-off points in their cities', async () => {
+  const { token } = await register();
+  const [isb] = (await call('GET', '/places?city=Islamabad')).body;
+  const [lhr] = (await call('GET', '/places?city=lahore')).body;
+  const body = {
+    from_city: 'islamabad', to_city: 'Lahore', earliest_at: inHours(30), latest_at: inHours(40),
+    from_place_id: isb.id, to_place_id: lhr.id,
+  };
+  const ok = await call('POST', '/ride-requests', { token, body });
+  assert.equal(ok.status, 201, JSON.stringify(ok.body));
+  assert.equal(ok.body.from_city, 'Islamabad');
+  assert.equal(ok.body.from_place.name, isb.name);
+  assert.equal(ok.body.to_place.id, lhr.id);
+
+  const swapped = await call('POST', '/ride-requests', { token, body: { ...body, from_place_id: lhr.id } });
+  assert.equal(swapped.status, 400);
+  assert.match(swapped.body.error, /must be in Islamabad/);
+
+  const anywhere = await call('POST', '/ride-requests', { token, body: { ...body, from_place_id: null, to_place_id: '' } });
+  assert.equal(anywhere.status, 201);
+  assert.equal(anywhere.body.from_place, null);
+});
+
+test('app errors are logged for admins, rate limited, and server errors too', async () => {
+  const { token } = await register();
+  const r = await call('POST', '/client-errors', { token, body: { message: 'TypeError: x is undefined', stack: 'at views.ride', url: '#/ride/1' } });
+  assert.equal(r.status, 204);
+  const row = db.prepare(`SELECT * FROM error_log WHERE source = 'app' ORDER BY id DESC`).get();
+  assert.equal(row.message, 'TypeError: x is undefined');
+  assert.equal(row.url, '#/ride/1');
+  assert.ok(row.user_id);
+  // Only admins can read them.
+  assert.equal((await call('GET', '/admin/errors', { token })).status, 403);
+});

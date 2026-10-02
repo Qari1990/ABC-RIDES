@@ -426,6 +426,12 @@ test('11. ride request → matching ride → passenger alerted', async () => {
   const zara = users['Zara Traveller'];
   const date = localDateTime(4, 0).slice(0, 10);
   await zara.go(`/requests/new?from=Multan&to=Lahore&date=${date}`, '#rq');
+  // Pickup chosen by tapping it on the Multan map, drop-off from the list.
+  const multanMap = zara.page.locator('[data-points=from_place_id]');
+  await multanMap.locator('.leaflet-marker-icon[title="Bahauddin Zakariya University"]').dispatchEvent('click');
+  assert.equal(await zara.page.locator('#rqfp option:checked').textContent(), 'Bahauddin Zakariya University');
+  assert.ok(await zara.page.locator('[data-points=to_place_id] .map-pin').count() > 3, 'Lahore points on the map');
+  await zara.page.selectOption('#rqtp', { label: 'Liberty Market, Gulberg' });
   await zara.page.fill('#rq [name=max_price]', '3000');
   await zara.page.click('#rq [type=submit]');
   await zara.page.waitForURL(/tab=requests/);
@@ -435,10 +441,15 @@ test('11. ride request → matching ride → passenger alerted', async () => {
   const sana = users['Sana Driver'];
   await sana.go('/requests?from=Multan', '#rq-list .card');
   assert.match(await sana.page.textContent('#rq-list'), /Zara Traveller/);
+  assert.match(await sana.page.textContent('#rq-list'), /Pickup: Bahauddin Zakariya University, Multan[\s\S]*Drop-off: Liberty Market, Gulberg, Lahore/);
   await sana.page.click('text=Offer this ride');
   await sana.page.waitForSelector('#offer');
   assert.equal(await sana.page.inputValue('#of'), 'Multan');
   await sana.page.waitForFunction(() => /km by road/.test(document.querySelector('#route-info').textContent));
+  // The passenger's points are already chosen, and the route is on the map.
+  assert.equal(await sana.page.locator('#opp option:checked').textContent(), 'Bahauddin Zakariya University');
+  assert.equal(await sana.page.locator('#odp option:checked').textContent(), 'Liberty Market, Gulberg');
+  await sana.page.waitForSelector('#offer-map .map-pin.start');
   await toStep(sana.page, 2);
   await sana.page.fill('#ow', `${date}T10:00`);
   await publish(sana.page);

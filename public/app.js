@@ -128,6 +128,10 @@ const SETUP_STEP = {
   phone_unverified: '/verify-phone', id_required: '/verify-id', driver_required: '/driver', insufficient_balance: '/wallet',
 };
 function handleError(err) {
+  // Our own messages ("Choose a drop-off stop...") are not bugs; crashes and server errors are.
+  if (err instanceof TypeError || err instanceof ReferenceError || err instanceof RangeError || err.status >= 500) {
+    reportError(err.message, err.stack);
+  }
   toast(err.message, true);
   const step = SETUP_STEP[err.code];
   if (step) setTimeout(() => { location.hash = `#${step}?next=${encodeURIComponent(location.hash.slice(1))}`; }, 1500);
@@ -256,6 +260,11 @@ function rideCard(r) {
 function requestCard(r, { mine = false } = {}) {
   const day = new Date(r.earliest_at);
   const offerParams = new URLSearchParams({ from: r.from_city, to: r.to_city, date: localInputValue(day).slice(0, 10) });
+  if (r.from_place) offerParams.set('pickup', r.from_place.id);
+  if (r.to_place) offerParams.set('drop', r.to_place.id);
+  const point = (p, label) => (p
+    ? `<div class="small">📍 ${label}: <b>${esc(p.name)}</b>, ${esc(p.city)} · <a href="${mapLink(p.lat, p.lon)}" target="_blank" rel="noopener">map</a></div>`
+    : `<div class="small muted">📍 ${label}: anywhere in the city</div>`);
   return `
   <div class="card">
     <div class="ride-top">
@@ -265,6 +274,7 @@ function requestCard(r, { mine = false } = {}) {
       </div>
       ${r.max_price ? `<div class="price">≤ ${money(r.max_price)}<small>per seat</small></div>` : ''}
     </div>
+    <div class="request-points">${point(r.from_place, 'Pickup')}${point(r.to_place, 'Drop-off')}</div>
     ${r.notes ? `<p class="small" style="margin:8px 0 0">“${esc(r.notes)}”</p>` : ''}
     <div class="list-row" style="margin-top:8px">
       ${mine ? `<span class="badge ${r.status === 'open' && !isPast(r.latest_at) ? 'pending' : 'cancelled'}">${r.status === 'open' && !isPast(r.latest_at) ? 'open' : 'closed'}</span>`
@@ -529,6 +539,7 @@ views.ride = async (page, q, id) => {
         ${b.home_pickup ? `<p class="small">🏠 Home pickup: ${esc(b.home_pickup.address)} (+${money(b.home_pickup.charge)})</p>` : ''}
         ${b.home_drop ? `<p class="small">🏠 Home drop: ${esc(b.home_drop.address)} (+${money(b.home_drop.charge)})</p>` : ''}
         <p>${b.seats} seat(s) · <b>${money(b.price_per_seat * b.seats + b.home_charge)}</b> to pay the driver</p>
+        ${!b.home_pickup && r.stops[b.board_stop ?? 0] && r.stops[b.board_stop ?? 0].lat != null ? `<p><a class="btn small ghost" href="${directions(r.stops[b.board_stop ?? 0].lat, r.stops[b.board_stop ?? 0].lon)}" target="_blank" rel="noopener">🧭 Directions to ${stopName(b.board_stop)}</a></p>` : ''}
         ${b.status === 'pending' ? '<p class="muted small">The driver will accept or decline your request soon. You’ll get a notification.</p>' : ''}
         ${r.driver.phone ? `<p>📞 Driver: <a href="tel:${esc(r.driver.phone)}">${esc(r.driver.phone)}</a></p>` : ''}
         ${r.payment_details ? `<p>💳 Pay to: <b>${esc(r.payment_details)}</b></p>` : ''}
@@ -558,9 +569,11 @@ views.ride = async (page, q, id) => {
             <span class="muted small" style="display:block">Within ${r.home_radius_km} km of the ${k === 'pickup' ? 'pickup' : 'drop-off'} point · ${money(settings.home_pickup_per_km)}/km, min ${money(settings.home_pickup_min)}</span></span></label>
           <div class="home-fields" data-kind="${k}" hidden>
             <div class="field"><input name="${k}_address" placeholder="House/street and a landmark"></div>
+            <p class="small muted" style="margin:0">Tap your home on the map${k === 'pickup' ? ', use your current location,' : ''} or paste a Google Maps link.</p>
+            <div class="map small" data-map="${k}"></div>
             <div class="actions">
               ${k === 'pickup' ? '<button class="btn small ghost" type="button" data-action="locate">📍 Use my current location</button>' : ''}
-              <input name="${k}_loc" placeholder="${k === 'pickup' ? 'or paste' : 'Paste'} a Google Maps link or coordinates" style="flex:1;min-width:200px">
+              <input name="${k}_loc" placeholder="Google Maps link or coordinates" style="flex:1;min-width:200px">
             </div>
             <p class="small muted home-note"></p>
           </div>
@@ -611,6 +624,8 @@ views.ride = async (page, q, id) => {
     return `<div class="stop ${on ? 'on' : ''}"><span class="dot"></span><div><b>${esc(st.name)}</b>, ${esc(st.city)}
           <div class="muted small">${st.km} km${at ? ` · ~${clock(at.toISOString())}` : ''}${i === r.segment.board && r.segment.board ? ' · you get on' : ''}${i === r.segment.alight && r.segment.alight < lastStop ? ' · you get off' : ''}</div></div></div>`;
   }).join('')}</div>
+      <div class="map" id="ride-map" role="img" aria-label="Map of the route"></div>
+      <p class="small muted map-note">Tap a stop for Google Maps and directions.</p>
       <p class="small muted">Rs ${r.fare_per_km}/km per seat · bus ≈ Rs ${settings.ref_bus_per_km}/km · private car ≈ Rs ${settings.ref_private_car_per_km}/km for the whole car.</p>
       ${r.home_pickup || r.home_drop ? `<p class="small">🏠 Home ${[r.home_pickup && 'pickup', r.home_drop && 'drop-off'].filter(Boolean).join(' & ')} within ${r.home_radius_km} km.</p>` : ''}` : `
       <div class="list-row"><span class="muted">Pickup</span><span>${esc(r.pickup_point || 'Ask the driver')}</span></div>
@@ -640,6 +655,25 @@ views.ride = async (page, q, id) => {
     ${reviewSection}`;
 
   const book = $('#book', page);
+  const drawRideMap = (seg = r.segment) => {
+    const el = $('#ride-map', page);
+    if (!el) return;
+    const homes = [];
+    const addHome = (h, label, stopIndex) => h && homes.push({ lat: h.lat, lon: h.lon, label, near: r.stops[stopIndex] });
+    if (isDriver) {
+      for (const x of (r.bookings || []).filter((y) => ['pending', 'confirmed'].includes(y.status))) {
+        addHome(x.home_pickup, `Pick up ${x.passenger_name}`, x.board_stop ?? 0);
+        addHome(x.home_drop, `Drop ${x.passenger_name}`, x.alight_stop ?? lastStop);
+      }
+    } else if (activeBooking) {
+      addHome(b.home_pickup, 'Your home pickup', b.board_stop ?? 0);
+      addHome(b.home_drop, 'Your home drop-off', b.alight_stop ?? lastStop);
+    }
+    const mine = activeBooking ? { board: b.board_stop ?? 0, alight: b.alight_stop ?? lastStop } : seg;
+    routeMap(el, r.stops, { board: isDriver ? 0 : mine.board, alight: isDriver ? lastStop : mine.alight, homes })
+      .catch((err) => { console.warn('Map failed:', err); el.hidden = true; });
+  };
+  if (stopsKnown) drawRideMap();
   const studentOk = me && me.traveler_type === 'student' && (!settings.student_price_requires_verification || me.student_verified);
   // Mirrors the server: whole route at the posted price, parts of it by km.
   const seatPrice = (bIdx, aIdx) => {
@@ -688,15 +722,42 @@ views.ride = async (page, q, id) => {
   if (book) {
     book.addEventListener('change', showFee);
     book.addEventListener('input', showFee);
+    const pickers = {};
+    const showPicker = (kind) => {
+      const seg = segmentNow();
+      const stop = r.stops[kind === 'pickup' ? seg.board : seg.alight];
+      const input = book[`${kind}_loc`];
+      locationPicker(book.querySelector(`[data-map=${kind}]`), {
+        around: stop,
+        radiusKm: r.home_radius_km,
+        value: parseLocation(input.value),
+        onPick: ({ lat, lon }) => { input.value = `${lat}, ${lon}`; showFee(); },
+      }).then((p) => { pickers[kind] = p; }).catch((err) => { console.warn('Map failed:', err); book.querySelector(`[data-map=${kind}]`).hidden = true; });
+    };
     book.querySelectorAll('[name^=want_]').forEach((cb) => cb.addEventListener('change', () => {
-      book.querySelector(`.home-fields[data-kind=${cb.name.slice(5)}]`).hidden = !cb.checked;
+      const kind = cb.name.slice(5);
+      book.querySelector(`.home-fields[data-kind=${kind}]`).hidden = !cb.checked;
+      if (cb.checked) showPicker(kind);
     }));
+    // Changing stops moves the allowed area for home pickup/drop, and the route highlight.
+    for (const sel of [book.board_stop, book.alight_stop].filter(Boolean)) {
+      sel.addEventListener('change', () => {
+        drawRideMap(segmentNow());
+        for (const kind of ['pickup', 'drop']) if (book[`want_${kind}`] && book[`want_${kind}`].checked) showPicker(kind);
+      });
+    }
+    for (const kind of ['pickup', 'drop']) {
+      const input = book[`${kind}_loc`];
+      if (input) input.addEventListener('change', () => { const loc = parseLocation(input.value); if (loc && pickers[kind]) pickers[kind].set(loc); });
+    }
     showFee();
     onClick(book, async (action) => {
       if (action !== 'locate') return;
       const link = await currentLocationLink();
       if (!link) throw new Error('Could not get your location. Paste a Google Maps link instead.');
       book.pickup_loc.value = link;
+      const loc = parseLocation(link);
+      if (loc && pickers.pickup) pickers.pickup.set(loc);
       showFee();
     });
     onSubmit(book, async (d) => {
@@ -815,6 +876,7 @@ views.offer = async (page, q) => {
             <div class="field"><label for="odp">Drop-off point</label><select id="odp" name="drop_place"><option value="">Choose a city first</option></select></div>
           </div>
           <div id="route-info" class="small muted">Choose the cities and points to see the distance and stops on the way.</div>
+          <div class="map" id="offer-map" hidden></div>
           <div id="legacy-price" class="field" hidden>
             <label for="opr">Price per seat (Rs)</label><input id="opr" name="price_per_seat" type="number" min="0" step="50">
             <p class="muted small">This city has no listed pickup points yet, so set the price yourself.</p>
@@ -913,6 +975,7 @@ views.offer = async (page, q) => {
     form.price_per_seat.required = !$('#legacy-price', page).hidden;
     if (noPoints) {
       plan = null;
+      $('#offer-map', page).hidden = true;
       $('#route-info', page).textContent = 'Choose the cities and points to see the distance and stops on the way.';
       updateFare();
       return;
@@ -936,6 +999,17 @@ views.offer = async (page, q) => {
       ${suggested.length ? `<p class="small">Add stops on the way so more passengers can join (they pay for their part of the route):</p>
       <div class="days">${suggested.map((p) => `<label><input type="checkbox" name="via" value="${p.id}" data-km="${p.km}" ${checked.has(String(p.id)) ? 'checked' : ''}><span>${esc(p.city)} · ${esc(p.name)}</span></label>`).join('')}</div>` : ''}`;
     $('#route-info', page).querySelectorAll('[name=via]').forEach((cb) => cb.addEventListener('change', () => replan(false)));
+    // The route on a map; tapping a suggested stop (+) adds it.
+    const mapEl = $('#offer-map', page);
+    mapEl.hidden = false;
+    const onRoute = new Set(plan.stops.map((p) => String(p.id)));
+    routeMap(mapEl, plan.stops, {
+      extra: suggested.filter((p) => !onRoute.has(String(p.id)) && p.lat != null),
+      onExtra: (p) => {
+        const cb = form.querySelector(`[name=via][value="${p.id}"]`);
+        if (cb) { cb.checked = true; replan(false); }
+      },
+    }).catch((err) => { console.warn('Map failed:', err); mapEl.hidden = true; });
     updateFare();
   };
 
@@ -993,6 +1067,10 @@ views.offer = async (page, q) => {
   form.fare_per_km.addEventListener('input', updateFare);
   form.seats_total.addEventListener('input', updateFare);
   await Promise.all([fillPoints(form.from_city, form.pickup_place, 'nofrom'), fillPoints(form.to_city, form.drop_place, 'noto')]);
+  // "Offer this ride" from a passenger's request passes their points along.
+  const preselect = (select, id) => { if (id && select.querySelector(`option[value="${CSS.escape(id)}"]`)) select.value = id; };
+  preselect(form.pickup_place, q.pickup);
+  preselect(form.drop_place, q.drop);
   replan(true);
 
   // Step-by-step: each step is checked before moving on, the last one reviews and publishes.
@@ -1107,9 +1185,16 @@ views.newRequest = async (page, q) => {
     <form id="rq" class="card">
       ${cityOptions()}
       <div class="row two">
-        <div class="field"><label>From</label><input name="from_city" list="cities" value="${esc(q.from)}" required></div>
-        <div class="field"><label>To</label><input name="to_city" list="cities" value="${esc(q.to)}" required></div>
+        <div class="field"><label for="rqf">From city</label><input id="rqf" name="from_city" list="cities" value="${esc(q.from)}" placeholder="e.g. Islamabad" required></div>
+        <div class="field"><label for="rqfp">Pickup point</label><select id="rqfp" name="from_place_id"><option value="">Choose a city first</option></select></div>
       </div>
+      <div class="map small" data-points="from_place_id" hidden></div>
+      <div class="row two">
+        <div class="field"><label for="rqt">To city</label><input id="rqt" name="to_city" list="cities" value="${esc(q.to)}" placeholder="e.g. Lahore" required></div>
+        <div class="field"><label for="rqtp">Drop-off point</label><select id="rqtp" name="to_place_id"><option value="">Choose a city first</option></select></div>
+      </div>
+      <div class="map small" data-points="to_place_id" hidden></div>
+      <p class="small muted">Tap a point on a map or pick from the list. Choose “Anywhere in the city” if you’re flexible.</p>
       <div class="row three">
         <div class="field"><label>Date</label><input name="date" type="date" value="${esc(date)}" required></div>
         <div class="field"><label>Leave after</label><input name="from_time" type="time" value="06:00" required></div>
@@ -1122,11 +1207,50 @@ views.newRequest = async (page, q) => {
       <div class="field"><label>Notes</label><textarea name="notes" maxlength="300" placeholder="e.g. Flexible on time, one suitcase"></textarea></div>
       <button class="btn block" type="submit">Post request</button>
     </form>`;
-  onSubmit($('#rq', page), async (d) => {
+  const form = $('#rq', page);
+  const timers = {};
+  const lists = new Map(); // select → places listed in it
+  const redraws = new Map(); // select → redraw function of its map
+  // One map per city, so each city's points are far enough apart to tap.
+  const drawMap = async (select) => {
+    const el = form.querySelector(`[data-points=${select.name}]`);
+    const places = lists.get(select) || [];
+    const group = [{ places, selected: select.value, onPick: (p) => { select.value = String(p.id); drawMap(select); } }];
+    if (!places.length) { el.hidden = true; redraws.delete(select); return; }
+    el.hidden = false;
+    try {
+      if (redraws.has(select)) redraws.get(select)(group);
+      else redraws.set(select, await pointsMap(el, group, { end: select === form.to_place_id }));
+    } catch (err) { console.warn('Map failed:', err); el.hidden = true; }
+  };
+  const fill = async (input, select) => {
+    const city = input.value.trim();
+    const list = city ? await api(`/places?city=${encodeURIComponent(city)}`).catch(() => []) : [];
+    const keep = select.value;
+    select.innerHTML = city
+      ? `<option value="">Anywhere in the city</option>${list.map((p) => `<option value="${p.id}">${esc(p.name)}</option>`).join('')}`
+      : '<option value="">Choose a city first</option>';
+    if (keep && list.some((p) => String(p.id) === keep)) select.value = keep;
+    lists.set(select, list);
+  };
+  for (const [input, select] of [[form.from_city, form.from_place_id], [form.to_city, form.to_place_id]]) {
+    input.addEventListener('input', () => {
+      clearTimeout(timers[input.name]);
+      timers[input.name] = setTimeout(async () => { await fill(input, select); drawMap(select); }, 350);
+    });
+    select.addEventListener('change', () => drawMap(select));
+  }
+  await Promise.all([fill(form.from_city, form.from_place_id), fill(form.to_city, form.to_place_id)]);
+  drawMap(form.from_place_id);
+  drawMap(form.to_place_id);
+
+  onSubmit(form, async (d) => {
     await api('/ride-requests', {
       method: 'POST',
       body: {
         from_city: d.from_city, to_city: d.to_city, seats: Number(d.seats), notes: d.notes,
+        from_place_id: d.from_place_id ? Number(d.from_place_id) : null,
+        to_place_id: d.to_place_id ? Number(d.to_place_id) : null,
         max_price: d.max_price ? Number(d.max_price) : null,
         earliest_at: new Date(`${d.date}T${d.from_time}`).toISOString(),
         latest_at: new Date(`${d.date}T${d.to_time}`).toISOString(),
@@ -1294,9 +1418,10 @@ views.login = async (page, q) => {
   page.innerHTML = `
     <h1>Log in</h1>
     <form id="login" class="card">
-      <div class="field"><label for="le">Email</label><input id="le" name="email" type="email" autocomplete="email" required></div>
+      <div class="field"><label for="le">Email or verified phone</label><input id="le" name="email" type="text" inputmode="email" autocomplete="username" placeholder="you@example.com or 03xx xxxxxxx" required></div>
       <div class="field"><label for="lp">Password</label><input id="lp" name="password" type="password" autocomplete="current-password" required></div>
       <button class="btn block" type="submit">Log in</button>
+      <p class="small" style="margin:12px 0 0;text-align:center"><a href="#/forgot">Forgot password?</a></p>
     </form>
     <p class="muted">New here? <a href="#/register${q.next ? `?next=${encodeURIComponent(q.next)}` : ''}">Create an account</a></p>
     ${nativeApp ? '<p class="muted small">Connected to the wrong server? <a href="#" data-action="server">Change server</a></p>' : ''}`;
@@ -1307,6 +1432,44 @@ views.login = async (page, q) => {
     location.hash = `#${q.next || '/'}`;
   });
   onClick(page, (action) => { if (action === 'server') nativeApp.changeServer(); });
+};
+
+views.forgot = async (page) => {
+  if (me) { location.hash = '#/'; return; }
+  page.innerHTML = `
+    <h1>Reset your password</h1>
+    <form id="fp-send" class="card">
+      <p class="muted small">Enter the phone number you verified on ABC Rides. We’ll text you a 6-digit code.</p>
+      <div class="field"><label for="fpp">Phone</label><input id="fpp" name="phone" type="tel" placeholder="03xx xxxxxxx" required></div>
+      <button class="btn block" type="submit">Send code</button>
+    </form>
+    <form id="fp-confirm" class="card" hidden>
+      <div class="field"><label for="fpc">Code</label><input id="fpc" name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" required></div>
+      <div class="field"><label for="fpn">New password</label><input id="fpn" name="new_password" type="password" minlength="8" autocomplete="new-password" required></div>
+      <button class="btn block" type="submit">Set new password</button>
+    </form>
+    <div id="fp-help" class="card warn small" hidden></div>
+    <p class="muted"><a href="#/login">Back to log in</a></p>`;
+  let phone = '';
+  onSubmit($('#fp-send', page), async (d) => {
+    try {
+      const res = await api('/auth/reset/send', { method: 'POST', body: d });
+      phone = d.phone;
+      toast(res.message);
+      $('#fp-confirm', page).hidden = false;
+      $('#fpc', page).focus();
+    } catch (err) {
+      if (err.code !== 'reset_unavailable') throw err;
+      const help = $('#fp-help', page);
+      help.hidden = false;
+      help.textContent = `${err.message} Support can set a temporary password for you after checking it’s really you.`;
+    }
+  });
+  onSubmit($('#fp-confirm', page), async (d) => {
+    await api('/auth/reset/confirm', { method: 'POST', body: { ...d, phone } });
+    toast('Password changed. Log in with your new password.');
+    location.hash = '#/login';
+  });
 };
 
 views.register = async (page, q) => {
@@ -1700,11 +1863,11 @@ views.user = async (page, _q, id) => {
 views.admin = async (page, q) => {
   if (!requireLogin()) return;
   if (me.role !== 'admin') { page.innerHTML = '<div class="card empty">Admins only.</div>'; return; }
-  const tab = ['verify', 'topups', 'reports', 'users', 'places', 'settings'].includes(q.tab) ? q.tab : 'overview';
+  const tab = ['verify', 'topups', 'reports', 'users', 'places', 'settings', 'errors'].includes(q.tab) ? q.tab : 'overview';
   const tabLink = (t, label) => `<a class="btn small ${tab === t ? '' : 'ghost'}" href="#/admin?tab=${t}">${label}</a>`;
   page.innerHTML = `
     <h1>Admin</h1>
-    <div class="tabs wrap">${tabLink('overview', 'Overview')}${tabLink('verify', 'Verifications')}${tabLink('topups', 'Top-ups')}${tabLink('reports', 'Reports')}${tabLink('users', 'Users')}${tabLink('places', 'Places')}${tabLink('settings', 'Settings')}</div>
+    <div class="tabs wrap">${tabLink('overview', 'Overview')}${tabLink('verify', 'Verifications')}${tabLink('topups', 'Top-ups')}${tabLink('reports', 'Reports')}${tabLink('users', 'Users')}${tabLink('places', 'Places')}${tabLink('settings', 'Settings')}${tabLink('errors', 'Errors')}</div>
     <div id="admin-body"><p class="muted">Loading…</p></div>`;
   const body = $('#admin-body', page);
 
@@ -1730,6 +1893,7 @@ views.admin = async (page, q) => {
         ${tile('Seats booked', s.seats_booked)}
         ${tile('Pending verifications', s.pending_verifications, '#/admin?tab=verify')}
         ${tile('Open reports', s.open_reports, '#/admin?tab=reports')}
+        ${tile('App errors (7 days)', s.errors_7d, '#/admin?tab=errors')}
       </div>
       <div class="card"><h3>Members by type</h3>
         ${Object.entries(TYPE_LABEL).map(([k, v]) => `<div class="list-row"><span>${v}</span><b>${s.users[k] || 0}</b></div>`).join('')}
@@ -1738,6 +1902,23 @@ views.admin = async (page, q) => {
         ${['pending', 'confirmed', 'rejected', 'cancelled'].map((k) => `<div class="list-row"><span class="badge ${k}">${k}</span><b>${s.bookings[k] || 0}</b></div>`).join('')}
         <div class="list-row"><span>Open ride requests</span><b>${s.open_requests}</b></div>
       </div>`;
+  } else if (tab === 'errors') {
+    const rows = await api('/admin/errors');
+    body.innerHTML = `
+      <p class="muted small">Errors on users’ phones and on the server, newest first. Send these to your developer to fix.</p>
+      ${rows.length ? `<button class="btn small ghost" data-action="clear-errors">Clear all</button>` : ''}
+      ${rows.map((e) => `
+        <details class="card">
+          <summary><span class="badge ${e.source === 'server' ? 'cancelled' : 'pending'}">${e.source}</span> <b>${esc(e.message)}</b>
+            <div class="muted small">${esc(when(e.created_at))}${e.user_name ? ` · ${esc(e.user_name)}` : ''}${e.url ? ` · ${esc(e.url)}` : ''}</div></summary>
+          ${e.detail ? `<pre class="small" style="white-space:pre-wrap;overflow-wrap:anywhere">${esc(e.detail)}</pre>` : ''}
+          ${e.user_agent ? `<p class="muted small">${esc(e.user_agent)}</p>` : ''}
+        </details>`).join('') || '<div class="card empty">No errors recorded. 🎉</div>'}`;
+    onClick(body, async (action) => {
+      if (action !== 'clear-errors') return;
+      await api('/admin/errors', { method: 'DELETE' });
+      render();
+    });
   } else if (tab === 'verify') {
     const DOC_NAMES = { cnic_front: 'CNIC front', cnic_back: 'CNIC back', selfie: 'Selfie', student_card: 'Student card', employee_card: 'Employee card',
       driving_license: 'Driving licence', vehicle_photo: 'Vehicle', vehicle_registration: 'Registration' };
@@ -1956,6 +2137,7 @@ views.admin = async (page, q) => {
               </form>
             </details>
           </div>
+          <button class="btn small ghost" data-action="temp-password" data-user="${u.id}" data-name="${esc(u.name)}">Temporary password</button>
           ${u.role !== 'admin' ? `<button class="btn small ${u.suspended ? '' : 'danger'}" data-action="suspend" data-user="${u.id}" data-suspended="${u.suspended ? 0 : 1}">${u.suspended ? 'Unsuspend' : 'Suspend'}</button>` : ''}
         </div>
       </div>`).join('') || '<div class="card empty">No users found.</div>'}`;
@@ -1971,6 +2153,12 @@ views.admin = async (page, q) => {
       render();
     }));
     onClick(body, async (action, data) => {
+      if (action === 'temp-password') {
+        if (!confirm(`Set a temporary password for ${data.name}? Only do this after checking it is really them (e.g. call their verified phone). They will be logged out everywhere.`)) return;
+        const res = await api(`/admin/users/${data.user}/temp-password`, { method: 'POST' });
+        prompt(`Temporary password for ${data.name}. Tell them to change it in Profile → Change password after logging in.`, res.password);
+        return;
+      }
       if (action !== 'suspend') return;
       if (data.suspended === '1' && !confirm('Suspend this user? They will be logged out everywhere.')) return;
       await api(`/admin/users/${data.user}/suspend`, { method: 'POST', body: { suspended: data.suspended === '1' } });
@@ -1979,6 +2167,28 @@ views.admin = async (page, q) => {
     });
   }
 };
+
+// ---- Error reporting --------------------------------------------------------
+// Unexpected errors on the phone are sent to the server so admins can see them
+// (Admin → Errors). A few per page load at most, without repeats.
+const reported = new Set();
+function reportError(message, stack) {
+  const key = String(message).slice(0, 200);
+  if (!message || reported.has(key) || reported.size >= 5) return;
+  reported.add(key);
+  fetch('/api/client-errors', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', ...(store.token ? { authorization: `Bearer ${store.token}` } : {}) },
+    body: JSON.stringify({ message: key, stack: stack ? String(stack).slice(0, 4000) : null, url: location.hash || '/' }),
+  }).catch(() => {});
+}
+window.addEventListener('error', (e) => reportError(e.message, e.error && e.error.stack));
+window.addEventListener('unhandledrejection', (e) => {
+  const r = e.reason || {};
+  // Expected API refusals (wrong password, full ride...) are not bugs.
+  if (r.status && r.status < 500) return;
+  reportError(r.message || String(r), r.stack);
+});
 
 // ---- Router -----------------------------------------------------------------
 
@@ -1989,7 +2199,7 @@ function parseHash() {
 }
 
 const NAV_GROUP = {
-  search: 'home', requests: 'offer', register: 'login', chat: 'inbox', admin: 'profile', user: 'home', ride: 'trips',
+  search: 'home', requests: 'offer', register: 'login', forgot: 'login', chat: 'inbox', admin: 'profile', user: 'home', ride: 'trips',
   'verify-phone': 'profile', 'verify-id': 'profile', driver: 'offer', wallet: 'profile',
 };
 
@@ -2074,6 +2284,7 @@ async function render() {
       location.hash = `#/login?next=${encodeURIComponent(location.hash.slice(1))}`;
       return;
     }
+    if (!err.status || err.status >= 500) reportError(`${name}: ${err.message}`, err.stack);
     page.innerHTML = `<div class="card empty"><p>${esc(err.message)}</p><a class="btn" href="#/">Go home</a></div>`;
   }
   renderNav(parseHash().name);

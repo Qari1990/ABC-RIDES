@@ -4,16 +4,29 @@ const { HttpError, bad, str, int, isoDate } = require('../errors');
 const { publicUser } = require('./users');
 const { getSettings } = require('../settings');
 const { requirePhone } = require('../policy');
+const { canonicalCity } = require('../geo');
 
 // "I need a ride" posts. Drivers browse them, and passengers are notified
 // when a matching ride is offered (see POST /rides).
 module.exports = function requestsRouter(db) {
   const router = express.Router();
 
+  const placeById = (id) => (id ? db.prepare('SELECT id, city, name, lat, lon FROM places WHERE id = ?').get(id) || null : null);
   const shape = (r) => ({
     ...r,
+    from_place: placeById(r.from_place_id),
+    to_place: placeById(r.to_place_id),
     passenger: publicUser(db, db.prepare('SELECT * FROM users WHERE id = ?').get(r.passenger_id)),
   });
+
+  // An optional pickup or drop-off point, which must be a listed point in that city.
+  const pointIn = (id, city, label) => {
+    if (id === undefined || id === null || id === '') return null;
+    const place = db.prepare('SELECT * FROM places WHERE id = ? AND active = 1').get(Number(id));
+    if (!place) throw bad(`${label} point not found`);
+    if (place.city.toLowerCase() !== city.toLowerCase()) throw bad(`${label} point must be in ${city}`);
+    return place.id;
+  };
 
   router.get('/ride-requests', (req, res) => {
     const where = [`status = 'open'`, 'latest_at > ?'];
@@ -27,8 +40,10 @@ module.exports = function requestsRouter(db) {
   router.post('/ride-requests', requireUser, (req, res) => {
     requirePhone(getSettings(db), req.user);
     const b = req.body || {};
-    const from = str(b.from_city, 'From city', { required: true, max: 60 });
-    const to = str(b.to_city, 'To city', { required: true, max: 60 });
+    const fromRaw = str(b.from_city, 'From city', { required: true, max: 60 });
+    const toRaw = str(b.to_city, 'To city', { required: true, max: 60 });
+    const from = canonicalCity(fromRaw) || fromRaw;
+    const to = canonicalCity(toRaw) || toRaw;
     if (from.toLowerCase() === to.toLowerCase()) throw bad('From and To cities must be different');
     const earliest = isoDate(b.earliest_at, 'Earliest time');
     const latest = isoDate(b.latest_at, 'Latest time');
@@ -37,14 +52,17 @@ module.exports = function requestsRouter(db) {
     const open = db.prepare(`SELECT COUNT(*) n FROM ride_requests WHERE passenger_id = ? AND status = 'open' AND latest_at > ?`)
       .get(req.user.id, new Date().toISOString()).n;
     if (open >= 10) throw bad('You can have at most 10 open ride requests');
+    const fromPlace = pointIn(b.from_place_id, from, 'Pickup');
+    const toPlace = pointIn(b.to_place_id, to, 'Drop-off');
 
     const { lastInsertRowid } = db.prepare(`
-      INSERT INTO ride_requests (passenger_id, from_city, to_city, earliest_at, latest_at, seats, max_price, notes)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(
+      INSERT INTO ride_requests (passenger_id, from_city, to_city, earliest_at, latest_at, seats, max_price, notes, from_place_id, to_place_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
       req.user.id, from, to, earliest.toISOString(), latest.toISOString(),
       int(b.seats, 'Seats', { min: 1, max: 8, fallback: 1 }),
       int(b.max_price, 'Max price', { min: 0, max: 100000, fallback: null }),
       str(b.notes, 'Notes', { max: 300 }),
+      fromPlace, toPlace,
     );
     res.status(201).json(shape(db.prepare('SELECT * FROM ride_requests WHERE id = ?').get(lastInsertRowid)));
   });

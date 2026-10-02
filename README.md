@@ -6,7 +6,11 @@ Drivers who are already going between cities post their empty seats; passengers 
 ## Features
 
 - **Find a ride**: search by from/to city, date (optional), time of day (morning/afternoon/evening), seats needed and women-only.
-- **Popular pickup & drop-off points**: about 50 well-known points across 21 cities (Thokar Niaz Baig, Kalma
+- **Maps** (Leaflet + OpenStreetMap, no API key): route maps with stops on every ride, tap-to-choose pickup points
+  for ride requests, tap-your-home on the map for home pickup, suggested stops you can add from the map, and
+  Google Maps directions links.
+- **Error log**: crashes on users' phones and server errors appear in **Admin → Errors**.
+- **Popular pickup & drop-off points**: about 110 well-known points across 48 cities (Thokar Niaz Baig, Kalma
   Chowk, Faizabad, Sohrab Goth…) with coordinates. Admins correct or add points by pasting coordinates from Google Maps.
 - **Map-based distances**: road distances between cities from built-in estimates, upgraded to real road distances
   with **Admin → Places → Update distances from maps** (OpenStreetMap routing via OSRM).
@@ -94,6 +98,7 @@ Environment variables:
 | `SIGNUP_LIMIT_PER_HOUR` | `100` | Sign-ups allowed per network address per hour |
 | `ROUTING_URL` | `https://router.project-osrm.org` | OSRM server used by "Update distances from maps" |
 | `DATABASE_URL` | | PostgreSQL address (e.g. a free [Neon](https://neon.tech) database). The SQLite database and uploaded photos are copied there after every change and restored on start-up, so hosts that wipe the disk (Render free) keep all data |
+| `MAP_TILE_URL` | OpenStreetMap | Map tiles (`{z}/{x}/{y}` URL). OpenStreetMap's servers are for light use; at scale use a provider such as MapTiler or Stadia with your key, and set `MAP_ATTRIBUTION` |
 | `DEMO_SEED` | off | `1` loads the demo users and rides whenever the server starts with an empty database |
 | `KEEP_AWAKE_URL` | `RENDER_EXTERNAL_URL` | Public address the server pings every 10 minutes so free hosting doesn't put it to sleep (`KEEP_AWAKE=0` turns it off) |
 
@@ -223,9 +228,9 @@ All endpoints are under `/api`. Send `Authorization: Bearer <token>` for the one
 
 ## Not built yet (needs third-party accounts)
 
-- **Password reset by SMS/email**: phone codes are built in (set `SMS_GATEWAY_URL`); reset-by-code is not built yet.
+- **Password reset by email**: reset by SMS code is built in and switches on with `SMS_GATEWAY_URL`; until then an admin sets a temporary password (Admin → Users).
 - **Push notifications while the app is closed**: needs Firebase Cloud Messaging. Today alerts appear in the app's inbox.
 - **Automatic wallet top-ups**: needs JazzCash/Easypaisa merchant accounts. Today an admin approves each top-up after checking the transaction ID, and fares are paid to drivers directly.
 - **Automatic face matching** of selfie vs CNIC (and NADRA verification): today an admin compares them by eye.
-- **Maps and live location tracking**: needs a maps API key.
+- **Live location tracking and road-following route lines**: maps show stops joined by straight lines; drawing the exact road needs a routing service.
 - **iOS app**: the web app works in Safari and can be added to the home screen.
