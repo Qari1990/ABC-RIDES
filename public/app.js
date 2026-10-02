@@ -288,6 +288,7 @@ function requestCard(r, { mine = false } = {}) {
   }
   const homeLine = (h, label) => (h
     ? `<div class="small">🏠 ${label}: ${esc(h.address || 'location shared')} · <a href="${mapLink(h.lat, h.lon)}" target="_blank" rel="noopener">map</a></div>` : '');
+  const open = open_(r);
   const point = (p, label) => (p
     ? `<div class="small">📍 ${label}: <b>${esc(p.name)}</b>, ${esc(p.city)} · <a href="${mapLink(p.lat, p.lon)}" target="_blank" rel="noopener">map</a></div>`
     : `<div class="small muted">📍 ${label}: anywhere in the city</div>`);
@@ -301,14 +302,85 @@ function requestCard(r, { mine = false } = {}) {
       ${r.max_price ? `<div class="price">≤ ${money(r.max_price)}<small>per seat</small></div>` : ''}
     </div>
     <div class="request-points">${point(r.from_place, 'Pickup')}${point(r.to_place, 'Drop-off')}${homeLine(r.home_pickup, 'Home pickup')}${homeLine(r.home_drop, 'Home drop-off')}</div>
+    ${fareLine(r)}
     ${r.notes ? `<p class="small" style="margin:8px 0 0">“${esc(r.notes)}”</p>` : ''}
     <div class="list-row" style="margin-top:8px">
-      ${mine ? `<span class="badge ${r.status === 'open' && !isPast(r.latest_at) ? 'pending' : 'cancelled'}">${r.status === 'open' && !isPast(r.latest_at) ? 'open' : 'closed'}</span>`
-    : `<a href="#/user/${r.passenger.id}">${esc(r.passenger.name)}</a><span class="muted small">${esc(TYPE_LABEL[r.passenger.traveler_type])}${r.passenger.verified ? ' · ✔ verified' : ''}</span>`}
-      ${mine && r.status === 'open' && !isPast(r.latest_at) ? `<button class="btn small ghost" data-action="close-request" data-id="${r.id}">Close</button>` : ''}
-      ${!mine && (!me || me.id !== r.passenger.id) ? `<a class="btn small" href="#/offer?${offerParams}">Offer this ride</a>` : ''}
+      ${mine ? `<span class="badge ${open ? 'pending' : 'cancelled'}">${open ? 'open' : 'closed'}</span>${open && r.offers_count ? ` <span class="badge brand">${r.offers_count} offer${r.offers_count > 1 ? 's' : ''}</span>` : ''}`
+    : `<a href="#/user/${r.passenger.id}">${esc(r.passenger.name)}</a><span class="muted small">${esc(TYPE_LABEL[r.passenger.traveler_type])}${r.passenger.verified ? ' · ✔ verified' : ''}${r.offers_count ? ` · ${r.offers_count} offer(s) so far` : ''}</span>`}
+      ${mine && open ? `<button class="btn small ghost" data-action="close-request" data-id="${r.id}">Close</button>` : ''}
     </div>
+    ${mine ? offersList(r) : driverActions(r, offerParams)}
   </div>`;
+}
+
+const open_ = (r) => r.status === 'open' && !isPast(r.latest_at);
+
+// "Rs 1,500 offered · Rs 4.0/km for 375 km · fair price ≈ Rs 3,000"
+function fareLine(r) {
+  const f = r.fare;
+  if (!f) return '';
+  const parts = [`🛣️ About ${f.km} km`];
+  if (r.max_price) parts.push(`offers ${money(r.max_price)}/seat = <b>Rs ${f.offered_per_km}/km</b>`);
+  parts.push(`fair price ≈ ${money(f.suggested_price)} (Rs ${settings.fare_per_km}/km)`);
+  return `<div class="small fare-line">${parts.join(' · ')}</div>`;
+}
+
+// What a driver can do with someone else's request.
+function driverActions(r, offerParams) {
+  if (me && me.id === r.passenger.id) return '';
+  const o = r.my_offer;
+  if (o) {
+    return `<div class="offer mine-offer"><div class="small"><b>Your offer:</b> ${money(o.price_per_seat)}/seat${o.per_km ? ` (Rs ${o.per_km}/km)` : ''} · ${when(o.departure_at)}
+      <span class="badge ${o.status === 'pending' ? 'pending' : o.status === 'accepted' ? 'confirmed' : 'cancelled'}">${o.status}</span></div>
+      <div class="actions">${o.status === 'accepted' && o.ride_id ? `<a class="btn small" href="#/ride/${o.ride_id}">Open the ride</a>` : ''}
+      ${o.status === 'pending' ? `<a class="btn small ghost" href="#/request-offer/${r.id}">Change</a><button class="btn small ghost" data-action="withdraw-offer" data-id="${o.id}">Withdraw</button>` : ''}</div></div>`;
+  }
+  if (!open_(r)) return '';
+  return `<div class="actions" style="margin-top:8px">
+    <a class="btn small" href="#/request-offer/${r.id}">🤝 Offer to take ${esc(r.passenger.name.split(' ')[0])}</a>
+    <a class="btn small ghost" href="#/offer?${offerParams}">Post as a new ride</a></div>`;
+}
+
+// The passenger's view of offers on their request.
+function offersList(r) {
+  const offers = (r.offers || []).filter((o) => o.status === 'pending' || o.status === 'accepted');
+  if (!offers.length) return open_(r) ? '<p class="small muted" style="margin:8px 0 0">No offers yet. Drivers on this route have been told; you’ll get a notification.</p>' : '';
+  return `<div class="offers"><b class="small">Offers from drivers</b>${offers.map((o) => `
+    <div class="offer">
+      <div class="ride-top">
+        <div><a href="#/user/${o.driver.id}"><b>${esc(o.driver.name)}</b></a>${o.driver.verified ? ' ✔' : ''}
+          ${o.driver.rating_avg ? ` · <span class="stars">★</span>${o.driver.rating_avg}` : ''} · ${o.driver.reliability ?? ''}${o.driver.reliability != null ? '% reliable' : ''}
+          <div class="muted small">${o.vehicle ? `🚗 ${esc(o.vehicle)} · ` : ''}🕒 ${when(o.departure_at)}</div></div>
+        <div class="price">${money(o.price_per_seat)}<small>per seat${o.per_km ? ` · Rs ${o.per_km}/km` : ''}</small></div>
+      </div>
+      <div class="small muted">${[o.from_place && `📍 ${esc(o.from_place.name)} → ${esc(o.to_place ? o.to_place.name : r.to_city)}`,
+    o.home_pickup && '🏠 home pickup', o.home_drop && '🏠 home drop', o.seats_total > r.seats && o.share_remaining && `shares ${o.seats_total - r.seats} other seat(s)`].filter(Boolean).join(' · ')}</div>
+      ${o.note ? `<div class="small">“${esc(o.note)}”</div>` : ''}
+      ${o.status === 'accepted'
+    ? `<div class="actions"><span class="badge confirmed">accepted</span>${o.ride_id ? `<a class="btn small" href="#/ride/${o.ride_id}">Open your ride</a>` : ''}</div>`
+    : `<div class="small">You pay the driver ${money(o.fare_total)}${o.passenger_fee ? ` · booking fee ${money(o.passenger_fee)} from your wallet when you accept` : ' · no booking fee'}</div>
+      <div class="actions"><button class="btn small" data-action="accept-offer" data-id="${o.id}" data-fee="${o.passenger_fee || 0}" data-name="${esc(o.driver.name)}">Accept</button>
+        <button class="btn small ghost" data-action="decline-offer" data-id="${o.id}">Decline</button></div>`}
+    </div>`).join('')}</div>`;
+}
+
+// Accept / decline / withdraw buttons, wherever request cards are listed.
+async function offerAction(action, data) {
+  if (action === 'accept-offer') {
+    const fee = Number(data.fee);
+    if (!confirm(`Accept ${data.name}'s offer?${fee ? ` Rs ${fee} booking fee will be taken from your wallet.` : ''} You'll both see each other's phone number.`)) return;
+    const res = await api(`/offers/${data.id}/accept`, { method: 'POST' });
+    toast('Booked! Your seat is confirmed.');
+    location.hash = `#/ride/${res.ride_id}`;
+    return;
+  }
+  if (action === 'decline-offer') { await api(`/offers/${data.id}/decline`, { method: 'POST' }); toast('Offer declined'); render(); }
+  if (action === 'withdraw-offer') {
+    if (!confirm('Withdraw your offer?')) return;
+    await api(`/offers/${data.id}/withdraw`, { method: 'POST' });
+    toast('Offer withdrawn');
+    render();
+  }
 }
 
 function personRow(u, extra = '') {
@@ -930,6 +1002,7 @@ views.offer = async (page, q) => {
   const STEP_TITLES = ['Route', 'When & seats', 'Price', 'Extras', 'Review'];
   page.innerHTML = `
     <h1>Offer a ride</h1>
+    <div id="offer-requests"></div>
     <div class="progress" aria-hidden="true">${STEP_TITLES.map(() => '<span></span>').join('')}</div>
     <p class="small muted" id="wiz-label"></p>
     ${postingFee ? `<div class="card warn">⚠️ Your reliability is ${me.reliability}% (below ${settings.reliability_threshold}%), so each ride you post costs ${money(postingFee)} from your wallet (balance ${money(me.wallet_balance)}). Complete trips without cancelling to earn points back.</div>` : ''}
@@ -1019,6 +1092,16 @@ views.offer = async (page, q) => {
     </form>`;
 
   const form = $('#offer', page);
+  // Passengers already waiting: an offer to one of them is the quickest booking.
+  const showWaiting = async () => {
+    const rows = (await api('/ride-requests')).filter((r) => r.passenger.id !== me.id && !r.my_offer);
+    setList($('#offer-requests', page), rows.length ? `
+      <div class="card waiting"><div class="list-row"><b>🙋 ${rows.length} passenger${rows.length > 1 ? 's' : ''} looking for a ride</b><a class="small" href="#/requests">See all</a></div>
+        ${rows.slice(0, 3).map((r) => `<div class="list-row"><span class="small">${esc(r.from_city)} → ${esc(r.to_city)} · ${when(r.earliest_at)} · ${r.seats} seat(s)${r.max_price ? ` · ≤ ${money(r.max_price)}` : ''}</span>
+          <a class="btn small" href="#/request-offer/${r.id}">Offer</a></div>`).join('')}</div>` : '');
+  };
+  showWaiting().catch(() => {});
+  live(page, showWaiting, 30000);
   let plan = null; // { stops: [...], distance_km, duration_minutes } for the chosen points
   let suggested = [];
   let touched = false;
@@ -1251,12 +1334,104 @@ views.requests = async (page, q, sub) => {
     </form>
     <div id="rq-list"><p class="muted">Loading…</p></div>`;
   onSubmit($('#rq-filter', page), (d) => { location.hash = `#/requests?${new URLSearchParams({ from: d.from, to: d.to })}`; });
+  onClick($('#rq-list', page), offerAction);
   const fill = async () => {
     const rows = await api(`/ride-requests?${new URLSearchParams({ from: q.from || '', to: q.to || '' })}`);
     setList($('#rq-list', page), rows.map((r) => requestCard(r)).join('') || '<div class="card empty">No open requests on this route.</div>');
   };
   await fill();
   live(page, fill);
+};
+
+// A driver's offer to take one passenger's request (instead of posting a ride).
+views['request-offer'] = async (page, _q, id) => {
+  if (!requireLogin()) return;
+  await refreshMe();
+  if (settings.require_driver_approval && me.driver_status !== 'approved') {
+    page.innerHTML = setupNeeded('Become a driver', 'To offer rides, drivers register once with their CNIC, driving licence and vehicle.', '/driver', 'Register as a driver');
+    return;
+  }
+  const r = await api(`/ride-requests/${id}`);
+  const o = r.my_offer && r.my_offer.status === 'pending' ? r.my_offer : null;
+  if (!open_(r)) { page.innerHTML = '<div class="card empty">This request is closed.</div>'; return; }
+  const earliest = new Date(Math.max(new Date(r.earliest_at).getTime(), Date.now() + 30 * 60000));
+  const homeKm = (h, p) => (h && p ? Math.ceil(haversineKm(p.lat, p.lon, h.lat, h.lon) * 1.3) : 0);
+  const pointSelect = (name, city, chosen) => `<select name="${name}" data-city="${esc(city)}"><option value="">${chosen ? esc(chosen.name) : 'Choose a point (optional)'}</option></select>`;
+  page.innerHTML = `
+    <p><a href="#/requests">← Ride requests</a></p>
+    <h1>Offer a ride to ${esc(r.passenger.name.split(' ')[0])}</h1>
+    <div class="card">
+      <div class="route">${esc(r.from_city)} <span class="arrow">→</span> ${esc(r.to_city)}</div>
+      <div class="meta"><span>📅 ${when(r.earliest_at)} – ${clock(r.latest_at)}</span><span>💺 ${r.seats} seat(s)</span></div>
+      <div class="request-points">${r.from_place ? `<div class="small">📍 From <b>${esc(r.from_place.name)}</b></div>` : ''}${r.to_place ? `<div class="small">📍 To <b>${esc(r.to_place.name)}</b></div>` : ''}
+        ${r.home_pickup ? `<div class="small">🏠 Wants home pickup: ${esc(r.home_pickup.address || 'location shared')}</div>` : ''}${r.home_drop ? `<div class="small">🏠 Wants home drop-off: ${esc(r.home_drop.address || 'location shared')}</div>` : ''}</div>
+      ${fareLine(r)}
+      ${r.notes ? `<p class="small">“${esc(r.notes)}”</p>` : ''}
+    </div>
+    <form id="req-offer" class="card">
+      <h3>Your offer</h3>
+      <div class="field"><label for="rod">When will you leave?</label>
+        <input id="rod" name="departure_at" type="datetime-local" required value="${localInputValue(o ? new Date(o.departure_at) : earliest)}"
+          min="${localInputValue(new Date(Math.max(Date.now(), new Date(r.earliest_at).getTime() - 3 * 36e5)))}" max="${localInputValue(new Date(new Date(r.latest_at).getTime() + 3 * 36e5))}"></div>
+      ${r.from_place && r.to_place ? '' : `<div class="row two">
+        <div class="field"><label>Pickup in ${esc(r.from_city)}</label>${pointSelect('from_place_id', r.from_city, r.from_place)}</div>
+        <div class="field"><label>Drop-off in ${esc(r.to_city)}</label>${pointSelect('to_place_id', r.to_city, r.to_place)}</div></div>`}
+      <div class="field"><label for="rop">Price per seat (Rs)</label>
+        <input id="rop" name="price_per_seat" type="number" min="0" step="10" required value="${o ? o.price_per_seat : (r.max_price || (r.fare ? r.fare.suggested_price : ''))}"></div>
+      <div id="ro-fare" class="small muted"></div>
+      <label class="check"><input type="checkbox" name="share_remaining" value="1" ${!o || o.share_remaining ? 'checked' : ''}> Share my other seats with more passengers</label>
+      <div class="field" id="ro-seats"><label for="ros">Passenger seats in your car</label><input id="ros" name="seats_total" type="number" min="${r.seats}" max="8" value="${o ? o.seats_total : Math.max(r.seats, 3)}"></div>
+      ${r.home_pickup ? `<label class="check"><input type="checkbox" name="home_pickup" value="1" checked> 🏠 I’ll pick them up from home (+ charge, all yours)</label>` : ''}
+      ${r.home_drop ? `<label class="check"><input type="checkbox" name="home_drop" value="1" checked> 🏠 I’ll drop them at home (+ charge, all yours)</label>` : ''}
+      <div class="field"><label for="ron">Note for the passenger (optional)</label><textarea id="ron" name="note" maxlength="300" placeholder="e.g. AC car, one bag each">${esc(o ? o.note : '')}</textarea></div>
+      <div id="ro-earn" class="hint"></div>
+      <button class="btn block" type="submit">${o ? 'Update my offer' : 'Send offer'}</button>
+      <p class="small muted" style="margin-top:8px">If ${esc(r.passenger.name.split(' ')[0])} accepts, the ride is created and booked for you automatically, the fees are charged, and you both see each other’s phone number.</p>
+    </form>`;
+  const form = $('#req-offer', page);
+  // Points for cities the passenger left open.
+  for (const sel of form.querySelectorAll('select[data-city]')) {
+    const list = await api(`/places?city=${encodeURIComponent(sel.dataset.city)}`).catch(() => []);
+    sel.innerHTML = `<option value="">Choose a point (optional)</option>${list.map((p) => `<option value="${p.id}">${esc(p.name)}</option>`).join('')}`;
+  }
+  const update = () => {
+    const price = Number(form.price_per_seat.value) || 0;
+    const km = r.fare ? r.fare.km : null;
+    const lines = [];
+    if (km) lines.push(`${money(price)} for ${km} km = <b>Rs ${(price / km).toFixed(1)}/km</b> per seat (fair ≈ Rs ${settings.fare_per_km}/km, allowed Rs ${settings.fare_min_per_km}–${settings.fare_max_per_km}/km${r.max_price ? `; ${esc(r.passenger.name.split(' ')[0])} offered ${money(r.max_price)}` : ''})`);
+    $('#ro-fare', page).innerHTML = lines.join('<br>');
+    $('#ro-seats', page).hidden = !form.share_remaining.checked;
+    const fare = price * r.seats;
+    const homeCharge = ['pickup', 'drop'].reduce((sum, k) => {
+      const h = r[`home_${k}`];
+      const at = k === 'pickup' ? r.from_place : r.to_place;
+      if (!h || !at || !form[`home_${k}`] || !form[`home_${k}`].checked) return sum;
+      return sum + Math.max(settings.home_pickup_min, roundFare(homeKm(h, at) * settings.home_pickup_per_km));
+    }, 0);
+    const commission = me.free_confirmations_left ? 0 : Math.ceil((fare * settings.driver_commission_pct) / 100);
+    const spare = form.share_remaining.checked ? Math.max(0, Number(form.seats_total.value) - r.seats) : 0;
+    $('#ro-earn', page).innerHTML = `${icon('wallet')}<span>From ${esc(r.passenger.name.split(' ')[0])}: <b>${money(fare + homeCharge)}</b>${homeCharge ? ` (incl. ${money(homeCharge)} home pickup/drop)` : ''}.
+      Commission ${commission ? `${money(commission)} (${settings.driver_commission_pct}%)` : 'free'} from your wallet when they accept.
+      ${spare ? `Your other ${spare} seat(s) go on sale for more passengers.` : ''}</span>`;
+  };
+  form.addEventListener('input', update);
+  form.addEventListener('change', update);
+  update();
+  onSubmit(form, async (d) => {
+    await api(`/ride-requests/${r.id}/offers`, {
+      method: 'POST',
+      body: {
+        departure_at: new Date(d.departure_at).toISOString(), price_per_seat: Number(d.price_per_seat),
+        share_remaining: !!d.share_remaining, seats_total: Number(d.seats_total || r.seats),
+        home_pickup: !!d.home_pickup, home_drop: !!d.home_drop,
+        home_radius_km: Math.min(settings.home_max_radius_km, Math.max(5, homeKm(r.home_pickup, r.from_place), homeKm(r.home_drop, r.to_place))),
+        from_place_id: d.from_place_id ? Number(d.from_place_id) : undefined, to_place_id: d.to_place_id ? Number(d.to_place_id) : undefined,
+        note: d.note,
+      },
+    });
+    toast(`Offer sent to ${r.passenger.name.split(' ')[0]}. You’ll be notified when they reply.`);
+    location.hash = `#/requests?${new URLSearchParams({ from: r.from_city, to: r.to_city })}`;
+  });
 };
 
 views.newRequest = async (page, q) => {
@@ -1461,9 +1636,12 @@ views.trips = async (page, q) => {
   if (tab === 'requests') {
     onClick(list, async (action, data) => {
       if (action === 'close-request') {
+        if (!confirm('Close this request? Pending offers will be cancelled.')) return;
         await api(`/ride-requests/${data.id}/close`, { method: 'POST' });
         render();
+        return;
       }
+      await offerAction(action, data);
     });
   }
   await fill();
@@ -2427,6 +2605,31 @@ function pushCard(state) {
   return '';
 }
 
+// ---- App updates (Android app) ------------------------------------------------
+// Screens and features update by themselves (they come from the server). The
+// app shell itself changes rarely; when a newer APK is published, offer it.
+let updateDismissed = false;
+async function checkAppUpdate() {
+  if (!nativeApp || updateDismissed) return;
+  const latest = await fetch('/downloads/version.json', { cache: 'no-store' }).then((r) => (r.ok ? r.json() : null)).catch(() => null);
+  // Version 1.5 (code 6) and older can't report their version.
+  const current = typeof nativeApp.appVersion === 'function' ? Number(nativeApp.appVersion()) : 6;
+  let bar = $('#update-bar');
+  if (!latest || !(latest.versionCode > current)) { if (bar) bar.remove(); return; }
+  if (!bar) {
+    bar = document.createElement('div');
+    bar.id = 'update-bar';
+    bar.className = 'update-bar';
+    document.body.insertBefore(bar, $('#view'));
+  }
+  // The explicit port makes older app versions open the link in the browser, which downloads it.
+  const port = location.protocol === 'https:' ? 443 : (location.port || 80);
+  const url = `${location.protocol}//${location.hostname}:${port}/${latest.url}?v=${latest.versionCode}`;
+  bar.innerHTML = `${icon('sparkles')}<span><b>Update available: version ${esc(latest.versionName)}</b><br><span class="small">Download it and tap Install; your account and trips stay as they are.</span></span>
+    <a class="btn small" href="${url}">Update</a><button class="icon-btn" data-close aria-label="Later">×</button>`;
+  bar.querySelector('[data-close]').addEventListener('click', () => { updateDismissed = true; bar.remove(); });
+}
+
 // ---- Error reporting --------------------------------------------------------
 // Unexpected errors on the phone are sent to the server so admins can see them
 // (Admin → Errors). A few per page load at most, without repeats.
@@ -2458,7 +2661,7 @@ function parseHash() {
 }
 
 const NAV_GROUP = {
-  search: 'home', requests: 'offer', register: 'login', forgot: 'login', chat: 'inbox', admin: 'profile', user: 'home', ride: 'trips',
+  search: 'home', requests: 'offer', 'request-offer': 'offer', register: 'login', forgot: 'login', chat: 'inbox', admin: 'profile', user: 'home', ride: 'trips',
   'verify-phone': 'profile', 'verify-id': 'profile', driver: 'offer', wallet: 'profile',
 };
 
@@ -2531,6 +2734,7 @@ async function refreshUnread() {
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState !== 'visible') return;
   refreshUnread();
+  checkAppUpdate();
   liveHooks.forEach((run) => run());
 });
 
@@ -2578,6 +2782,7 @@ window.addEventListener('hashchange', async () => {
 
 ready.then(() => {
   render();
+  checkAppUpdate();
   // Keep this device's push registration linked to whoever is logged in (tokens can change).
   if (me && appPush() && appPushUser() === String(me.id)) {
     appPushToken().then((token) => api('/me/push-app', { method: 'POST', body: { token } })).catch(() => {});

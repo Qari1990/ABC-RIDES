@@ -12,6 +12,12 @@ Drivers who are already going between cities post their empty seats; passengers 
 - **Ride requests reach drivers**: a new passenger request alerts (inbox + push) the drivers who drive that
   route, or every approved driver when nobody does yet, and admins (Admin → Settings). Requests can include
   pickup/drop-off points and home pickup/drop chosen on a map; "Offer this ride" fills all of it in.
+- **Driver offers on requests**: instead of posting a ride, a driver sends an offer (time, price per seat, seats
+  to share, home pickup/drop) to a passenger's request. Accepting it creates the ride and a confirmed booking at
+  once, charges both fees, and shows each the other's phone; other drivers' offers close, and spare seats go on
+  sale to other passengers. Request cards show the distance, the passenger's price per km and the fair price.
+- **App updates**: the Android app checks `public/downloads/version.json` (written by `android/sign-dist.sh`)
+  and offers newer versions with an Update button; screens and features update without it.
 - **Live updates**: ride lists, requests, trips, inbox and ride pages refresh themselves (every 20 s, when the
   app comes back to the screen, and when a new alert arrives), without disturbing a form being filled in.
 - **Search near your pickup point**: choose where you'll get on; rides are sorted by how close their stop is.

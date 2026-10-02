@@ -442,7 +442,7 @@ test('11. ride request → matching ride → passenger alerted', async () => {
   await sana.go('/requests?from=Multan', '#rq-list .card');
   assert.match(await sana.page.textContent('#rq-list'), /Zara Traveller/);
   assert.match(await sana.page.textContent('#rq-list'), /Pickup: Bahauddin Zakariya University, Multan[\s\S]*Drop-off: Liberty Market, Gulberg, Lahore/);
-  await sana.page.click('text=Offer this ride');
+  await sana.page.click('text=Post as a new ride');
   await sana.page.waitForSelector('#offer');
   assert.equal(await sana.page.inputValue('#of'), 'Multan');
   await sana.page.waitForFunction(() => /km by road/.test(document.querySelector('#route-info').textContent));

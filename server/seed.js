@@ -112,6 +112,8 @@ function removeDemoData(db) {
       UPDATE wallet_transactions SET ride_id = NULL WHERE ride_id IN ${rides};
       DELETE FROM reviews WHERE ride_id IN ${rides} OR reviewer_id IN ${who} OR reviewee_id IN ${who};
       DELETE FROM reports WHERE reporter_id IN ${who} OR reported_user_id IN ${who} OR ride_id IN ${rides};
+      DELETE FROM request_offers WHERE driver_id IN ${who} OR ride_id IN ${rides}
+        OR request_id IN (SELECT id FROM ride_requests WHERE passenger_id IN ${who});
       DELETE FROM bookings WHERE passenger_id IN ${who} OR ride_id IN ${rides};
       DELETE FROM rides WHERE driver_id IN ${who};
       DELETE FROM ride_requests WHERE passenger_id IN ${who};

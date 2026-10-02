@@ -482,3 +482,16 @@ table.earn th { color: var(--muted); font-weight: 650; font-size: .75rem; text-t
 }
 
 .near-field { margin: 4px 0 16px; }
+
+.fare-line { margin-top: 6px; color: var(--muted); }
+.fare-line b { color: var(--text); }
+.offers { margin-top: 12px; display: grid; gap: 10px; }
+.offer { border: 1px solid var(--border); border-radius: 12px; padding: 10px 12px; background: var(--surface-2); }
+.offer .actions { margin-top: 8px; }
+.mine-offer { margin-top: 10px; }
+
+.update-bar { position: sticky; top: 0; z-index: 30; display: flex; align-items: center; gap: 10px; margin: 0; padding: 10px 16px;
+  background: var(--brand); color: #fff; font-size: 14px; }
+.update-bar > span { flex: 1; line-height: 1.35; }
+.update-bar .btn { background: #fff; color: var(--brand); }
+.update-bar .icon-btn { background: none; border: 0; color: #fff; font-size: 22px; line-height: 1; padding: 4px; cursor: pointer; }

@@ -208,6 +208,28 @@ CREATE TABLE IF NOT EXISTS route_distances (
   updated_at  TEXT NOT NULL
 );
 
+-- A driver's offer to take a passenger's ride request. Accepting one creates
+-- the ride and a confirmed booking (fees are charged then).
+CREATE TABLE IF NOT EXISTS request_offers (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  request_id      INTEGER NOT NULL REFERENCES ride_requests(id),
+  driver_id       INTEGER NOT NULL REFERENCES users(id),
+  departure_at    TEXT NOT NULL,
+  price_per_seat  INTEGER NOT NULL CHECK (price_per_seat >= 0),
+  seats_total     INTEGER NOT NULL CHECK (seats_total BETWEEN 1 AND 8),
+  share_remaining INTEGER NOT NULL DEFAULT 1,
+  from_place_id   INTEGER REFERENCES places(id),
+  to_place_id     INTEGER REFERENCES places(id),
+  home_pickup     INTEGER NOT NULL DEFAULT 0,
+  home_drop       INTEGER NOT NULL DEFAULT 0,
+  home_radius_km  INTEGER NOT NULL DEFAULT 0,
+  note            TEXT,
+  status          TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'accepted', 'declined', 'withdrawn', 'expired')),
+  ride_id         INTEGER REFERENCES rides(id),
+  created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+CREATE INDEX IF NOT EXISTS request_offers_request ON request_offers (request_id, status);
+
 -- Browsers that asked for push notifications (Web Push).
 CREATE TABLE IF NOT EXISTS push_subscriptions (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,

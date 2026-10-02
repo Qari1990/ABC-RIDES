@@ -5,6 +5,7 @@ const { CITIES, estimateRoute } = require('./geo');
 const usersRouter = require('./routes/users');
 const ridesRouter = require('./routes/rides');
 const requestsRouter = require('./routes/requests');
+const { offersRouter } = require('./routes/offers');
 const messagesRouter = require('./routes/messages');
 const adminRouter = require('./routes/admin');
 const onboardingRouter = require('./routes/onboarding');
@@ -45,6 +46,7 @@ function createApp(db, { uploadDir = process.env.UPLOAD_DIR || path.join(__dirna
   api.use(placesRouter(db));
   api.use(ridesRouter(db));
   api.use(requestsRouter(db));
+  api.use(offersRouter(db));
   api.use(messagesRouter(db));
   api.use('/admin', adminRouter(db, { uploadDir }));
   api.use((_req, res) => res.status(404).json({ error: 'Not found' }));

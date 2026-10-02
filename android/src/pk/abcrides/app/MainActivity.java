@@ -13,6 +13,7 @@ import android.os.Build;
 import android.os.Bundle;
 import android.view.View;
 import android.view.WindowInsets;
+import android.webkit.DownloadListener;
 import android.webkit.GeolocationPermissions;
 import android.webkit.JavascriptInterface;
 import android.webkit.ValueCallback;
@@ -74,6 +75,13 @@ public class MainActivity extends Activity {
         s.setUserAgentString(s.getUserAgentString() + " ABCRidesApp/1.0");
 
         web.addJavascriptInterface(new Bridge(), "AbcAndroid");
+        // Downloads (e.g. a new version of this app) go to the browser, which can save and install them.
+        web.setDownloadListener(new DownloadListener() {
+            @Override
+            public void onDownloadStart(String url, String userAgent, String contentDisposition, String mimeType, long length) {
+                openExternal(Uri.parse(url));
+            }
+        });
         web.setWebViewClient(new Client());
         web.setWebChromeClient(new Chrome());
 
@@ -314,6 +322,17 @@ public class MainActivity extends Activity {
                     showSetup(null);
                 }
             });
+        }
+
+        /** This app's version code, so the web app can offer an update. */
+        @JavascriptInterface
+        @SuppressWarnings("deprecation")
+        public int appVersion() {
+            try {
+                return getPackageManager().getPackageInfo(getPackageName(), 0).versionCode;
+            } catch (PackageManager.NameNotFoundException e) {
+                return 0;
+            }
         }
 
         /** Whether this build can receive push notifications. */

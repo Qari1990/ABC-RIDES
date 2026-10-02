@@ -7,6 +7,7 @@ const { requirePhone } = require('../policy');
 const { canonicalCity, CITY_CENTRES, haversineKm } = require('../geo');
 const { findSegment } = require('../fares');
 const { notify, when } = require('../notify');
+const { offersFor, fareInfo } = require('./offers');
 
 // "I need a ride" posts. Drivers browse them, and passengers are notified
 // when a matching ride is offered (see POST /rides).
@@ -14,8 +15,11 @@ module.exports = function requestsRouter(db) {
   const router = express.Router();
 
   const placeById = (id) => (id ? db.prepare('SELECT id, city, name, lat, lon FROM places WHERE id = ?').get(id) || null : null);
-  const shape = (r) => ({
+  // viewer: the logged-in user, who sees the offers they may see (see offers.js).
+  const shape = (r, viewer) => ({
     ...r,
+    fare: fareInfo(db, getSettings(db), r),
+    ...offersFor(db, getSettings(db), r, viewer),
     from_place: placeById(r.from_place_id),
     to_place: placeById(r.to_place_id),
     home_pickup: r.home_pickup ? JSON.parse(r.home_pickup) : null,
@@ -52,7 +56,13 @@ module.exports = function requestsRouter(db) {
     if (req.query.from) { where.push('from_city = ? COLLATE NOCASE'); params.push(String(req.query.from).trim()); }
     if (req.query.to) { where.push('to_city = ? COLLATE NOCASE'); params.push(String(req.query.to).trim()); }
     const rows = db.prepare(`SELECT * FROM ride_requests WHERE ${where.join(' AND ')} ORDER BY earliest_at LIMIT 100`).all(...params);
-    res.json(rows.map(shape));
+    res.json(rows.map((r) => shape(r, req.user)));
+  });
+
+  router.get('/ride-requests/:id', (req, res) => {
+    const r = db.prepare('SELECT * FROM ride_requests WHERE id = ?').get(Number(req.params.id));
+    if (!r) throw new HttpError(404, 'Ride request not found');
+    res.json(shape(r, req.user));
   });
 
   router.post('/ride-requests', requireUser, (req, res) => {
@@ -86,7 +96,7 @@ module.exports = function requestsRouter(db) {
     );
     const row = db.prepare('SELECT * FROM ride_requests WHERE id = ?').get(lastInsertRowid);
     const notified = alertDrivers(row, req.user);
-    res.status(201).json({ ...shape(row), drivers_notified: notified });
+    res.status(201).json({ ...shape(row, req.user), drivers_notified: notified });
   });
 
   // Tells drivers about a new request: those who drive this route (rides in
@@ -120,7 +130,7 @@ module.exports = function requestsRouter(db) {
 
   router.get('/me/ride-requests', requireUser, (req, res) => {
     const rows = db.prepare('SELECT * FROM ride_requests WHERE passenger_id = ? ORDER BY earliest_at DESC LIMIT 100').all(req.user.id);
-    res.json(rows.map(shape));
+    res.json(rows.map((r) => shape(r, req.user)));
   });
 
   router.post('/ride-requests/:id/close', requireUser, (req, res) => {
@@ -128,7 +138,12 @@ module.exports = function requestsRouter(db) {
     if (!row) throw new HttpError(404, 'Request not found');
     if (row.passenger_id !== req.user.id) throw new HttpError(403, 'This is not your request');
     db.prepare(`UPDATE ride_requests SET status = 'closed' WHERE id = ?`).run(row.id);
-    res.json(shape(db.prepare('SELECT * FROM ride_requests WHERE id = ?').get(row.id)));
+    // Pending offers end with the request.
+    for (const o of db.prepare(`SELECT * FROM request_offers WHERE request_id = ? AND status = 'pending'`).all(row.id)) {
+      db.prepare(`UPDATE request_offers SET status = 'expired' WHERE id = ?`).run(o.id);
+      notify(db, o.driver_id, `${req.user.name} no longer needs a ride`, `${row.from_city} → ${row.to_city}`, '/requests');
+    }
+    res.json(shape(db.prepare('SELECT * FROM ride_requests WHERE id = ?').get(row.id), req.user));
   });
 
   return router;

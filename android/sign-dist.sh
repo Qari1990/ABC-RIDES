@@ -20,4 +20,8 @@ apksigner sign --ks "$KEYSTORE" --ks-pass "pass:$KEYSTORE_PASS" --ks-key-alias "
 # Warnings about META-INF files are expected (v2/v3 signatures cover the whole file).
 out=$(apksigner verify build/abc-rides-release.apk 2>&1) || { echo "$out"; exit 1; }
 cp build/abc-rides-release.apk ../public/downloads/abc-rides.apk
+# The app checks this to offer users the update.
+printf '{"versionCode": %s, "versionName": "%s", "url": "downloads/abc-rides.apk"}\n' \
+  "$(aapt dump badging build/abc-rides-release.apk | sed -n "s/.*versionCode='\([0-9]*\)'.*/\1/p")" \
+  "$(aapt dump badging build/abc-rides-release.apk | sed -n "s/.*versionName='\([^']*\)'.*/\1/p")" > ../public/downloads/version.json
 echo "==> Signed and published to public/downloads/abc-rides.apk"
