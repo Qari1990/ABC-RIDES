@@ -3,6 +3,7 @@ package pk.abcrides.app;
 import android.Manifest;
 import android.app.Activity;
 import android.content.ActivityNotFoundException;
+import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
@@ -40,6 +41,9 @@ public class MainActivity extends Activity {
     private static final int REQUEST_FILE = 1;
     private static final int REQUEST_LOCATION = 2;
     private static final String BRAND = "#0b7a5e";
+    private static final int REQUEST_NOTIFY = 3;
+    /** Intent extra with an app page to open, e.g. "/chat/12" (from a notification). */
+    static final String EXTRA_LINK = "link";
 
     private WebView web;
     private ValueCallback<Uri[]> fileCallback;
@@ -77,7 +81,33 @@ public class MainActivity extends Activity {
         if (server.isEmpty()) {
             showSetup(null);
         } else {
-            web.loadUrl(server + "/");
+            web.loadUrl(server + "/" + linkFragment(getIntent()));
+        }
+        pushCall("start");
+    }
+
+    /** "#/chat/12" for an intent opened from a notification, else "". */
+    private static String linkFragment(Intent intent) {
+        String link = intent == null ? null : intent.getStringExtra(EXTRA_LINK);
+        return link != null && link.startsWith("/") ? "#" + link : "";
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        String fragment = linkFragment(intent);
+        if (!fragment.isEmpty() && !server().isEmpty()) web.loadUrl(server() + "/" + fragment);
+    }
+
+    /**
+     * Calls a static method of Push (Firebase), which only the Gradle build
+     * contains. Returns null when this build has no Firebase.
+     */
+    private Object pushCall(String method) {
+        try {
+            return Class.forName("pk.abcrides.app.Push").getMethod(method, Context.class).invoke(null, this);
+        } catch (Throwable e) {
+            return null;
         }
     }
 
@@ -286,6 +316,42 @@ public class MainActivity extends Activity {
             });
         }
 
+        /** Whether this build can receive push notifications. */
+        @JavascriptInterface
+        public boolean pushAvailable() {
+            return Boolean.TRUE.equals(pushCall("available"));
+        }
+
+        /** Asks for notification permission (Android 13+) and fetches this install's token. */
+        @JavascriptInterface
+        public void enablePush() {
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    if (Build.VERSION.SDK_INT >= 33
+                            && checkSelfPermission("android.permission.POST_NOTIFICATIONS") != PackageManager.PERMISSION_GRANTED) {
+                        requestPermissions(new String[] { "android.permission.POST_NOTIFICATIONS" }, REQUEST_NOTIFY);
+                    }
+                    pushCall("start");
+                }
+            });
+        }
+
+        /** "granted", "denied" or "default" (not asked yet), like the browser's Notification.permission. */
+        @JavascriptInterface
+        public String pushPermission() {
+            if (Build.VERSION.SDK_INT < 33) return "granted";
+            if (checkSelfPermission("android.permission.POST_NOTIFICATIONS") == PackageManager.PERMISSION_GRANTED) return "granted";
+            return prefs().getBoolean("notify_asked", false) ? "denied" : "default";
+        }
+
+        /** This install's Firebase token, or "" while it is still being fetched. */
+        @JavascriptInterface
+        public String getPushToken() {
+            Object token = pushCall("token");
+            return token == null ? "" : token.toString();
+        }
+
         @JavascriptInterface
         public void share(String text) {
             Intent send = new Intent(Intent.ACTION_SEND);
@@ -307,6 +373,10 @@ public class MainActivity extends Activity {
 
     @Override
     public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] results) {
+        if (requestCode == REQUEST_NOTIFY) {
+            prefs().edit().putBoolean("notify_asked", true).apply();
+            return;
+        }
         if (requestCode == REQUEST_LOCATION && geoCallback != null) {
             boolean granted = results.length > 0 && results[0] == PackageManager.PERMISSION_GRANTED;
             geoCallback.invoke(geoOrigin, granted, false);

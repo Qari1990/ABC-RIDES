@@ -218,6 +218,14 @@ CREATE TABLE IF NOT EXISTS push_subscriptions (
   created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
+-- Android app installs that get push notifications (Firebase Cloud Messaging).
+CREATE TABLE IF NOT EXISTS app_push_tokens (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  token       TEXT NOT NULL UNIQUE,
+  created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
 -- Road shapes between two points, fetched once from the routing service.
 CREATE TABLE IF NOT EXISTS route_shapes (
   pair        TEXT PRIMARY KEY,   -- "lat,lon|lat,lon" rounded to 4 decimals

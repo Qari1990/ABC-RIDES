@@ -3,9 +3,9 @@
 // Push standard: no Firebase or other account needed. The server's VAPID keys
 // are created on first start and kept in the database.
 //
-// Not available inside the Android WebView app; that needs Firebase Cloud
-// Messaging in the native shell.
+// The Android app gets the same notifications through Firebase (see fcm.js).
 const webpush = require('web-push');
+const { fcmConfigured, sendFcm } = require('./fcm');
 
 let configured = null;
 
@@ -34,6 +34,15 @@ function saveSubscription(db, userId, sub) {
 
 /** Sends a notification to all of a user's devices, in the background. */
 function sendPush(db, userId, { title, body, link }) {
+  // Android app installs, through Firebase.
+  if (fcmConfigured()) {
+    for (const t of db.prepare('SELECT * FROM app_push_tokens WHERE user_id = ?').all(userId)) {
+      sendFcm(t.token, { title, body, link })
+        .then((r) => { if (r === 'gone') db.prepare('DELETE FROM app_push_tokens WHERE id = ?').run(t.id); })
+        .catch((err) => console.warn(`App push failed: ${err.message}`));
+    }
+  }
+  // Browsers and home-screen web apps, through Web Push.
   const subs = db.prepare('SELECT * FROM push_subscriptions WHERE user_id = ?').all(userId);
   if (!subs.length) return;
   vapidKeys(db);
@@ -48,4 +57,11 @@ function sendPush(db, userId, { title, body, link }) {
   }
 }
 
-module.exports = { vapidKeys, saveSubscription, sendPush };
+function saveAppToken(db, userId, token) {
+  if (typeof token !== 'string' || token.length < 20 || token.length > 4096) return false;
+  db.prepare(`INSERT INTO app_push_tokens (user_id, token) VALUES (?, ?)
+    ON CONFLICT(token) DO UPDATE SET user_id = excluded.user_id`).run(userId, token);
+  return true;
+}
+
+module.exports = { vapidKeys, saveSubscription, saveAppToken, sendPush };

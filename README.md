@@ -10,8 +10,8 @@ Drivers who are already going between cities post their empty seats; passengers 
   for ride requests, tap-your-home on the map for home pickup, suggested stops you can add from the map, and
   Google Maps directions links.
 - **Error log**: crashes on users' phones and server errors appear in **Admin → Errors**.
-- **Push notifications** (free Web Push, no Firebase): users of the web app/home-screen app turn them on in
-  Inbox or Profile and get booking, ride and chat alerts with the app closed. (Not inside the Android WebView app yet.)
+- **Push notifications**: booking, ride and chat alerts with the app closed, turned on in Inbox or Profile. The
+  Android app uses Firebase Cloud Messaging (free); browsers and home-screen web apps use Web Push (no account).
 - **Forgot password**: a code by email (free Brevo account) or SMS; otherwise an admin sets a temporary password.
 - **Road-following route lines** on maps (OSRM's free routing server, cached on our server).
 - **Popular pickup & drop-off points**: about 110 well-known points across 48 cities (Thokar Niaz Baig, Kalma
@@ -104,6 +104,7 @@ Environment variables:
 | `DATABASE_URL` | | PostgreSQL address (e.g. a free [Neon](https://neon.tech) database). The SQLite database and uploaded photos are copied there after every change and restored on start-up, so hosts that wipe the disk (Render free) keep all data |
 | `MAP_TILE_URL` | OpenStreetMap | Map tiles (`{z}/{x}/{y}` URL). OpenStreetMap's servers are for light use; at scale use a provider such as MapTiler or Stadia with your key, and set `MAP_ATTRIBUTION` |
 | `BREVO_API_KEY`, `EMAIL_FROM` | | Free email (Brevo, 300/day) for password reset codes. `EMAIL_FROM` is a sender address verified in Brevo; `EMAIL_FROM_NAME` defaults to "ABC Rides" |
+| `FIREBASE_SERVICE_ACCOUNT` | | Firebase service account JSON (or base64 of it) for push notifications to the Android app. The app side needs the Firebase values in `android/app.properties` |
 | `PUSH_CONTACT` | | `mailto:` address given to browser push services (Web Push); push works without it |
 | `REMOVE_DEMO_DATA` | off | `1` deletes the demo accounts (`*@example.com`) and their rides on start-up; use when going live |
 | `DEMO_SEED` | off | `1` loads the demo users and rides whenever the server starts with an empty database |
@@ -135,6 +136,19 @@ android/build.sh https://abc-rides.onrender.com   # or bake a server address in
 Signing uses `android/debug.keystore`, created on the first build and git-ignored. Keep it: updates
 only install over an app signed with the same key. Set `KEYSTORE`, `KEYSTORE_PASS` and `KEY_ALIAS`
 to sign with a release key.
+
+**With push notifications (Firebase):** the Firebase SDK needs Gradle, so this build runs on GitHub
+Actions (`.github/workflows/android.yml`, free). Each push that changes `android/` builds the app and
+commits the unsigned APK to `android/dist/`; then `git pull && android/sign-dist.sh` signs it with the
+same key and publishes it as `public/downloads/abc-rides.apk`. To switch push on:
+
+1. In the [Firebase console](https://console.firebase.google.com) create a project and add an Android
+   app with package name `pk.abcrides.app`.
+2. Copy the values from its `google-services.json` into `android/app.properties`
+   (`firebaseProjectId` = `project_id`, `firebaseAppId` = `mobilesdk_app_id`,
+   `firebaseApiKey` = `current_key`, `firebaseSenderId` = `project_number`).
+3. Project settings → Service accounts → **Generate new private key**, and paste the whole JSON
+   into the server's `FIREBASE_SERVICE_ACCOUNT` setting.
 
 **Testing on a phone over Wi-Fi:** run `npm start` on your computer, find its local IP (`ipconfig` on
 Windows, `ip addr` on Linux/macOS), install the APK on the phone, and enter `http://<that-ip>:3000`.
@@ -235,7 +249,6 @@ All endpoints are under `/api`. Send `Authorization: Bearer <token>` for the one
 
 ## Not built yet (needs third-party accounts)
 
-- **Push notifications inside the Android app**: needs Firebase Cloud Messaging in the native shell. The web app already gets push notifications.
 - **Automatic wallet top-ups**: needs JazzCash/Easypaisa merchant accounts. Today an admin approves each top-up after checking the transaction ID, and fares are paid to drivers directly.
 - **Automatic face matching** of selfie vs CNIC (and NADRA verification): today an admin compares them by eye.
 - **Live location tracking** during a trip.

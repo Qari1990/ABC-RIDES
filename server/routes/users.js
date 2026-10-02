@@ -5,7 +5,7 @@ const { rateLimiter } = require('../security');
 const { normalizePhone } = require('../sms');
 const { getSettings } = require('../settings');
 const { freeConfirmationsLeft } = require('../wallet');
-const { vapidKeys, saveSubscription } = require('../push');
+const { vapidKeys, saveSubscription, saveAppToken } = require('../push');
 
 const TRAVELER_TYPES = ['professional', 'student', 'traveler'];
 const GENDERS = ['male', 'female', 'other'];
@@ -175,6 +175,17 @@ module.exports = function usersRouter(db) {
 
   router.delete('/me/push', requireUser, (req, res) => {
     db.prepare('DELETE FROM push_subscriptions WHERE user_id = ? AND endpoint = ?').run(req.user.id, String((req.body || {}).endpoint || ''));
+    res.status(204).end();
+  });
+
+  // The Android app's Firebase token for this install.
+  router.post('/me/push-app', requireUser, (req, res) => {
+    if (!saveAppToken(db, req.user.id, (req.body || {}).token)) throw bad('Invalid app token');
+    res.status(204).end();
+  });
+
+  router.delete('/me/push-app', requireUser, (req, res) => {
+    db.prepare('DELETE FROM app_push_tokens WHERE user_id = ? AND token = ?').run(req.user.id, String((req.body || {}).token || ''));
     res.status(204).end();
   });
 

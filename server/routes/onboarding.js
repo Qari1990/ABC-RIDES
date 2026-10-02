@@ -262,7 +262,7 @@ module.exports = function onboardingRouter(db, { uploadDir }) {
         organization = NULL, emergency_name = NULL, emergency_phone = NULL, cnic = NULL, verified_phone = NULL,
         phone_verified = 0, licence_number = NULL, suspended = 1, role = 'user' WHERE id = ?`)
         .run(`deleted-${u.id}@deleted.invalid`, crypto.randomBytes(32).toString('hex'), u.id);
-      for (const t of ['documents', 'vehicles', 'phone_codes', 'reset_codes', 'push_subscriptions', 'sessions', 'notifications', 'ride_requests']) {
+      for (const t of ['documents', 'vehicles', 'phone_codes', 'reset_codes', 'push_subscriptions', 'app_push_tokens', 'sessions', 'notifications', 'ride_requests']) {
         const col = t === 'ride_requests' ? 'passenger_id' : 'user_id';
         db.prepare(`DELETE FROM ${t} WHERE ${col} = ?`).run(u.id);
       }

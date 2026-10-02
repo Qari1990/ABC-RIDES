@@ -3,6 +3,9 @@
 # Output (Actions → this run → Artifacts):
 #   abc-rides-aab: app-release.aab  upload this to Play Console
 #   abc-rides-apk: app-release.apk  install directly on phones
+# On pushes, the unsigned APK is also committed to android/dist/ so it can be
+# signed with the app's own key (android/sign-dist.sh) and published on the
+# download page. Commits made with the workflow token don't start new runs.
 #
 # Signing for Play: create an upload key once, e.g.
 #   keytool -genkeypair -v -keystore upload.jks -alias upload -keyalg RSA -keysize 2048 -validity 10000
@@ -22,6 +25,9 @@ on:
         description: Server address baked into the app (blank = app.properties)
         required: false
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -31,6 +37,8 @@ jobs:
         working-directory: android
     steps:
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0   # full history, so the build commit can be rebased if needed
 
       - uses: actions/setup-java@v5
         with:
@@ -71,3 +79,16 @@ jobs:
         with:
           name: abc-rides-apk
           path: android/build/gradle/outputs/apk/release/*.apk
+
+      - name: Save the unsigned APK in the repository
+        if: github.event_name == 'push'
+        run: |
+          mkdir -p dist
+          cp build/gradle/outputs/apk/release/*.apk dist/abc-rides-unsigned.apk
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -f dist/abc-rides-unsigned.apk
+          # [skip render]: no need to redeploy the server for an app build.
+          git commit -m "Android build $(sed -n 's/^versionName=//p' app.properties) ($(git rev-parse --short HEAD)) [skip render]" || exit 0
+          for i in 1 2 3; do git pull --rebase origin "$GITHUB_REF_NAME" && git push origin "HEAD:$GITHUB_REF_NAME" && exit 0; sleep 5; done
+          exit 1

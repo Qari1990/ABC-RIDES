@@ -2186,11 +2186,27 @@ views.admin = async (page, q) => {
   }
 };
 
-// ---- Push notifications (Web Push; browsers and home-screen web apps) -------
-const pushSupported = () => !nativeApp && 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+// ---- Push notifications -----------------------------------------------------
+// Android app: Firebase, through the native bridge. Browsers and home-screen
+// web apps: Web Push with a service worker.
+const appPush = () => Boolean(nativeApp && nativeApp.pushAvailable && settings.app_push && nativeApp.pushAvailable());
+const pushSupported = () => appPush() || (!nativeApp && 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window);
+const APP_PUSH_KEY = 'app_push_user';
+const appPushUser = () => { try { return localStorage.getItem(APP_PUSH_KEY); } catch { return null; } };
+const setAppPushUser = (v) => { try { v ? localStorage.setItem(APP_PUSH_KEY, v) : localStorage.removeItem(APP_PUSH_KEY); } catch { /* private mode */ } };
+
+// Firebase hands the app its token a moment after start-up.
+async function appPushToken() {
+  for (let i = 0; i < 20; i += 1) {
+    const token = nativeApp.getPushToken();
+    if (token) return token;
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  throw new Error('Could not turn on notifications. Check your internet connection and try again.');
+}
 
 async function pushSubscription() {
-  if (!pushSupported()) return null;
+  if (!pushSupported() || appPush()) return null;
   const reg = await navigator.serviceWorker.getRegistration();
   return reg ? reg.pushManager.getSubscription() : null;
 }
@@ -2198,11 +2214,23 @@ async function pushSubscription() {
 /** 'unsupported' | 'blocked' | 'on' | 'off' */
 async function pushState() {
   if (!pushSupported()) return 'unsupported';
+  if (appPush()) {
+    const perm = nativeApp.pushPermission();
+    if (perm === 'denied') return 'blocked';
+    return perm === 'granted' && me && appPushUser() === String(me.id) ? 'on' : 'off';
+  }
   if (Notification.permission === 'denied') return 'blocked';
   return (await pushSubscription().catch(() => null)) ? 'on' : 'off';
 }
 
 async function enablePush() {
+  if (appPush()) {
+    nativeApp.enablePush(); // asks for permission on Android 13+
+    const token = await appPushToken();
+    await api('/me/push-app', { method: 'POST', body: { token } });
+    setAppPushUser(String(me.id));
+    return;
+  }
   const reg = await navigator.serviceWorker.register('sw.js');
   await navigator.serviceWorker.ready;
   if (await Notification.requestPermission() !== 'granted') throw new Error('Notifications are blocked. Allow them for this site in your browser settings.');
@@ -2213,6 +2241,12 @@ async function enablePush() {
 }
 
 async function disablePush() {
+  if (appPush()) {
+    const token = nativeApp.getPushToken();
+    if (token) await api('/me/push-app', { method: 'DELETE', body: { token } }).catch(() => {});
+    setAppPushUser(null);
+    return;
+  }
   const sub = await pushSubscription();
   if (!sub) return;
   await api('/me/push', { method: 'DELETE', body: { endpoint: sub.endpoint } }).catch(() => {});
@@ -2221,7 +2255,11 @@ async function disablePush() {
 
 function pushCard(state) {
   if (state === 'off') return `<div class="card push-card"><b>🔔 Get alerts on this phone</b><p class="small muted">Know the moment a driver accepts, a passenger books or someone messages you, even when ABC Rides is closed.</p><button class="btn small" data-action="push-on">Turn on notifications</button></div>`;
-  if (state === 'blocked') return '<p class="small muted">🔔 Notifications are blocked for this site. Allow them in your browser’s site settings to get alerts.</p>';
+  if (state === 'blocked') {
+    return appPush()
+      ? '<p class="small muted">🔔 Notifications are off for ABC Rides. Turn them on in your phone’s Settings → Apps → ABC Rides → Notifications.</p>'
+      : '<p class="small muted">🔔 Notifications are blocked for this site. Allow them in your browser’s site settings to get alerts.</p>';
+  }
   return '';
 }
 
@@ -2365,7 +2403,12 @@ window.addEventListener('hashchange', async () => {
 
 ready.then(() => {
   render();
-  if (me) pushSubscription().then((sub) => sub && api('/me/push', { method: 'POST', body: { subscription: sub.toJSON() } })).catch(() => {});
+  // Keep this device's push registration linked to whoever is logged in (tokens can change).
+  if (me && appPush() && appPushUser() === String(me.id)) {
+    appPushToken().then((token) => api('/me/push-app', { method: 'POST', body: { token } })).catch(() => {});
+  } else if (me) {
+    pushSubscription().then((sub) => sub && api('/me/push', { method: 'POST', body: { subscription: sub.toJSON() } })).catch(() => {});
+  }
   refreshUnread();
   setInterval(refreshUnread, 30000);
 });
