@@ -2,7 +2,7 @@ const express = require('express');
 const { hashPassword, verifyPassword, createSession, requireUser } = require('../auth');
 const { HttpError, bad, str, oneOf } = require('../errors');
 const { rateLimiter } = require('../security');
-const { normalizePhone } = require('../sms');
+const { normalizePhone } = require('../phone');
 const { getSettings } = require('../settings');
 const { freeConfirmationsLeft } = require('../wallet');
 const { vapidKeys, saveSubscription, saveAppToken } = require('../push');
@@ -35,6 +35,7 @@ function publicUser(db, u) {
     verified: u.verification_status === 'verified',
     verified_as: u.verification_status === 'verified' ? u.verification_doc_type : null,
     phone_verified: !!u.phone_verified,
+    email_verified: !!u.email_verified,
     student_verified: u.student_status === 'verified',
     approved_driver: u.driver_status === 'approved',
     reliability: u.reliability,

@@ -12,7 +12,7 @@ before(async () => {
   process.env.ADMIN_EMAILS = 'admin@fares.pk';
   ({ db, call, register, close } = await startServer({
     settings: {
-      require_phone_verification: false,
+      require_email_verification: false,
       require_driver_approval: false,
       student_price_requires_verification: false,
       driver_commission_pct: 10,

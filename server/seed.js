@@ -8,7 +8,7 @@
 const { openDb, transaction } = require('./db');
 const { hashPassword } = require('./auth');
 const { placeKm, minutesFor } = require('./geo');
-const { normalizePhone } = require('./sms');
+const { normalizePhone } = require('./phone');
 const { TERMS_VERSION } = require('./terms');
 
 const users = [
@@ -43,7 +43,7 @@ function seedDemo(db) {
     // Demo accounts are already through onboarding: phone verified, ID checked, Rs 1,000 in the wallet.
     let cnic = 3520210000001;
     for (const [, email, phone] of users) {
-      db.prepare(`UPDATE users SET phone_verified = 1, verified_phone = ?, verification_status = 'verified',
+      db.prepare(`UPDATE users SET phone_verified = 1, email_verified = 1, verified_phone = ?, verification_status = 'verified',
         verification_doc_type = 'cnic', cnic = COALESCE(cnic, ?), wallet_balance = 1000 WHERE email = ?`)
         .run(normalizePhone(phone), String(cnic++), email);
     }

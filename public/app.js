@@ -142,7 +142,7 @@ function onClick(el, handler) {
 
 // Shows the error and, when a setup step is missing, takes the user to it.
 const SETUP_STEP = {
-  phone_unverified: '/verify-phone', id_required: '/verify-id', driver_required: '/driver', insufficient_balance: '/wallet',
+  email_unverified: '/verify-email', id_required: '/verify-id', driver_required: '/driver', insufficient_balance: '/wallet',
   terms_required: '/accept-terms',
 };
 
@@ -1014,9 +1014,9 @@ function currentLocationLink() {
 views.offer = async (page, q) => {
   if (!requireLogin()) return;
   await Promise.all([refreshMe(), loadCars()]);
-  // Drivers need a verified phone and (if the admin requires it) an approved driver registration.
-  if (settings.require_phone_verification && !me.phone_verified) {
-    page.innerHTML = setupNeeded('Verify your phone first', 'Posting rides needs a verified phone number. It takes a minute.', '/verify-phone?next=/offer', 'Verify phone');
+  // Drivers need a verified email and (if the admin requires it) an approved driver registration.
+  if (settings.require_email_verification && !me.email_verified) {
+    page.innerHTML = setupNeeded('Verify your email first', 'Posting rides needs a verified email. We send you a code; it takes a minute.', '/verify-email?next=/offer', 'Verify email');
     return;
   }
   if (settings.require_driver_approval && me.driver_status !== 'approved') {
@@ -1863,7 +1863,7 @@ views.login = async (page, q) => {
   page.innerHTML = `
     <h1>Log in</h1>
     <form id="login" class="card">
-      <div class="field"><label for="le">Email or verified phone</label><input id="le" name="email" type="text" inputmode="email" autocomplete="username" placeholder="you@example.com or 03xx xxxxxxx" required></div>
+      <div class="field"><label for="le">Email</label><input id="le" name="email" type="text" inputmode="email" autocomplete="username" placeholder="you@example.com" required></div>
       <div class="field"><label for="lp">Password</label><input id="lp" name="password" type="password" autocomplete="current-password" required></div>
       <button class="btn block" type="submit">Log in</button>
       <p class="small" style="margin:12px 0 0;text-align:center"><a href="#/forgot">Forgot password?</a></p>
@@ -1883,8 +1883,8 @@ views.forgot = async (page) => {
   page.innerHTML = `
     <h1>Reset your password</h1>
     <form id="fp-send" class="card">
-      <p class="muted small">Enter your account’s email (or your verified phone). We’ll send you a 6-digit code.</p>
-      <div class="field"><label for="fpp">Email or phone</label><input id="fpp" name="login" type="text" inputmode="email" autocomplete="username" placeholder="you@example.com" required></div>
+      <p class="muted small">Enter your account’s email. We’ll send you a 6-digit code.</p>
+      <div class="field"><label for="fpp">Email</label><input id="fpp" name="login" type="email" autocomplete="username" placeholder="you@example.com" required></div>
       <button class="btn block" type="submit">Send code</button>
     </form>
     <form id="fp-confirm" class="card" hidden>
@@ -1958,8 +1958,8 @@ views.register = async (page, q) => {
   onSubmit($('#register', page), async (d) => {
     const res = await api('/auth/register', { method: 'POST', body: { ...d, accept_terms: !!d.accept_terms } });
     store.token = res.token; me = res.user;
-    toast(`Welcome, ${me.name.split(' ')[0]}! Let’s verify your phone.`);
-    location.hash = `#/verify-phone?next=${encodeURIComponent(q.next || '/')}`;
+    toast(`Welcome, ${me.name.split(' ')[0]}! Let’s verify your email.`);
+    location.hash = `#/verify-email?next=${encodeURIComponent(q.next || '/')}`;
   });
 };
 
@@ -1982,7 +1982,7 @@ function setupChecklist(u) {
     </a>`;
   const idStatus = u.verification_status;
   const rows = [
-    row(u.phone_verified ? '✅' : '➕', 'Phone number', u.phone_verified ? esc(u.phone) : 'Needed to book and post rides', '/verify-phone', u.phone_verified ? '' : 'Verify'),
+    row(u.email_verified ? '✅' : '➕', 'Email address', u.email_verified ? esc(u.email) : 'Needed to book and post rides', '/verify-email', u.email_verified ? '' : 'Verify'),
     row(STATUS_ICON[idStatus], 'Identity (CNIC + selfie)',
       { verified: `Verified · ${esc(u.cnic_masked || '')}`, pending: 'Under review', rejected: `Not approved${u.verification_note ? `: ${esc(u.verification_note)}` : ''}`, none: 'Get a verified badge and more bookings' }[idStatus],
       '/verify-id', idStatus === 'verified' || idStatus === 'pending' ? '' : 'Verify'),
@@ -2007,30 +2007,38 @@ function setupChecklist(u) {
     </div>`;
 }
 
-views['verify-phone'] = async (page, q) => {
+views['verify-email'] = async (page, q) => {
   if (!requireLogin()) return;
   await refreshMe();
   const next = q.next || '/profile';
-  if (me.phone_verified) {
-    page.innerHTML = setupNeeded('Phone verified ✅', `${esc(me.phone)} is verified.`, next, 'Continue');
+  if (me.email_verified) {
+    page.innerHTML = setupNeeded('Email verified ✅', `${esc(me.email)} is verified.`, next, 'Continue');
     return;
   }
   page.innerHTML = `
-    <h1>Verify your phone</h1>
-    <p class="muted">We’ll send a 6-digit code by SMS to <b>${esc(me.phone)}</b>. <a href="#/profile">Wrong number?</a></p>
+    <h1>Verify your email</h1>
+    <p class="muted">We’ll email a 6-digit code to <b id="sent-to">${esc(me.email)}</b>. Check your inbox and the spam folder.</p>
     <div id="dev-code"></div>
     <form id="otp" class="card">
       <div class="field"><label for="code">Code</label>
         <input id="code" name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" placeholder="••••••" required class="otp"></div>
       <button class="btn block" type="submit">Verify</button>
       <button class="btn ghost block" type="button" data-action="resend" style="margin-top:8px">Send code</button>
-    </form>`;
+    </form>
+    <details class="card"><summary><b>Wrong email address?</b></summary>
+      <form id="fix-email" style="margin-top:12px">
+        <div class="field"><label for="new-email">Your email</label><input id="new-email" name="email" type="email" value="${esc(me.email)}" required></div>
+        <button class="btn small" type="submit">Correct it and send the code</button>
+      </form>
+    </details>
+    <p class="small muted">No email after a few minutes? Use “Resend”, or ask ABC Rides support to verify you.</p>`;
   const resend = page.querySelector('[data-action=resend]');
   let timer;
-  const send = async () => {
-    const res = await api('/me/phone/send-code', { method: 'POST' });
+  const send = async (body) => {
+    const res = await api('/me/email/send-code', { method: 'POST', body });
+    $('#sent-to', page).textContent = res.sent_to;
     if (res.dev_code) {
-      $('#dev-code', page).innerHTML = `<div class="card warn small">Development mode (no SMS provider set up): your code is <b>${res.dev_code}</b>.</div>`;
+      $('#dev-code', page).innerHTML = `<div class="card warn small">Development mode (no email service set up): your code is <b>${res.dev_code}</b>.</div>`;
       page.querySelector('#code').value = res.dev_code;
     } else {
       toast(`Code sent to ${res.sent_to}`);
@@ -2046,13 +2054,19 @@ views['verify-phone'] = async (page, q) => {
     pageTimers.push(timer);
   };
   onClick(page, async (action) => { if (action === 'resend') await send(); });
+  onSubmit($('#fix-email', page), async (d) => {
+    await send({ email: d.email });
+    page.querySelector('details').open = false;
+  });
   onSubmit($('#otp', page), async (d) => {
-    me = await api('/me/phone/verify', { method: 'POST', body: { code: d.code } });
-    toast('Phone verified ✅');
+    me = await api('/me/email/verify', { method: 'POST', body: { code: d.code } });
+    toast('Email verified ✅');
     location.hash = `#${next}`;
   });
   send().catch(handleError);
 };
+// Old links (notifications, bookmarks) to the phone verification that email replaced.
+views['verify-phone'] = (page, q) => views['verify-email'](page, q);
 
 views['verify-id'] = async (page, q) => {
   if (!requireLogin()) return;
@@ -2256,7 +2270,7 @@ views.driver = async (page) => {
     <h1>Become a driver</h1>
     <p class="muted">Register once, then post rides for free. We check every driver so passengers feel safe.</p>
     ${me.driver_status === 'rejected' ? `<div class="card warn">Your last application was not approved${me.driver_note ? `: ${esc(me.driver_note)}` : ''}. Please fix it and submit again.</div>` : ''}
-    ${settings.require_phone_verification && !me.phone_verified ? setupNeeded('Step 0: verify your phone', 'Verify your phone number first.', '/verify-phone?next=/driver', 'Verify phone') : `
+    ${settings.require_email_verification && !me.email_verified ? setupNeeded('Step 0: verify your email', 'Verify your email address first: we send you a code.', '/verify-email?next=/driver', 'Verify email') : `
     <form id="drv">
       ${needId ? `
       <div class="card">
@@ -2495,8 +2509,8 @@ views.admin = async (page, q) => {
     const sum = (o) => Object.values(o).reduce((a, b) => a + b, 0);
     const tile = (label, value, href) => `<a class="card stat" href="${href || '#/admin'}"><b>${value}</b><span>${label}</span></a>`;
     body.innerHTML = `
-      ${s.sms_configured ? '' : `<div class="card warn small">⚠️ <b>No SMS provider is set up.</b> Phone codes are shown on screen, so phone
-        verification is not secure yet. Set <code>SMS_GATEWAY_URL</code> on the server before launch.</div>`}
+      ${s.email_configured ? '' : `<div class="card warn small">⚠️ <b>No email service is set up.</b> Verification codes are shown on screen, so email
+        verification is not secure. Set <code>BREVO_API_KEY</code> and <code>EMAIL_FROM</code> on the server.</div>`}
       ${!s.backup || !s.backup.configured
         ? `<div class="card warn small">⚠️ <b>Data is not backed up.</b> On free hosting, accounts and rides are lost when the server restarts. Set <code>DATABASE_URL</code> to a free PostgreSQL database (e.g. Neon).</div>`
         : s.backup.last_error
@@ -2582,7 +2596,7 @@ views.admin = async (page, q) => {
     body.innerHTML = users.map((u) => `
       <div class="card" data-user="${u.id}">
         <div class="ride-top"><b>${esc(u.name)}</b><span class="badge pending">${pendingList(u)}</span></div>
-        <div class="small muted">${esc(u.email)} · ${esc(u.phone)} ${u.phone_verified ? '✅' : '(phone not verified)'} · ${esc(TYPE_LABEL[u.traveler_type])}${u.organization ? ` · ${esc(u.organization)}` : ''}</div>
+        <div class="small muted">${esc(u.email)} ${u.email_verified ? '✅' : '(email not verified)'} · ${esc(u.phone)} · ${esc(TYPE_LABEL[u.traveler_type])}${u.organization ? ` · ${esc(u.organization)}` : ''}</div>
         <div class="list-row"><span class="muted">CNIC</span><b>${esc(u.cnic || '—')}</b></div>
         ${u.licence_number ? `<div class="list-row"><span class="muted">Licence</span><b>${esc(u.licence_number)}</b></div>` : ''}
         ${u.vehicle ? `<div class="list-row"><span class="muted">Vehicle</span><b>${esc(u.vehicle.make)} ${esc(u.vehicle.model)} ${u.vehicle.year}, ${esc(u.vehicle.color)} · ${esc(u.vehicle.plate)} · ${u.vehicle.seats} seats</b></div>` : ''}
@@ -2707,7 +2721,7 @@ views.admin = async (page, q) => {
       ['Home pickup & drop', ['home_pickup_per_km', 'home_pickup_min', 'home_max_radius_km']],
       ['Calculator & comparisons', ['petrol_price', 'car_km_per_litre', 'ref_bus_per_km', 'ref_private_car_per_km']],
       ['Reliability points', ['reliability_threshold', 'low_reliability_fee', 'penalty_driver_cancel', 'penalty_passenger_cancel', 'late_cancel_hours', 'reward_completed']],
-      ['Onboarding & security', ['require_phone_verification', 'require_id_for_booking', 'require_driver_approval', 'student_price_requires_verification']],
+      ['Onboarding & security', ['require_email_verification', 'require_id_for_booking', 'require_driver_approval', 'student_price_requires_verification']],
       ['Wallet top-up accounts', ['topup_accounts']],
     ];
     const input = (k) => {
@@ -2772,11 +2786,21 @@ views.admin = async (page, q) => {
             <div class="badges">
               <span class="badge ${u.verification_status === 'verified' ? 'confirmed' : u.verification_status === 'pending' ? 'pending' : ''}">ID ${u.verification_status === 'none' ? 'not verified' : u.verification_status}</span>
               ${u.driver_status !== 'none' ? `<span class="badge ${u.driver_status === 'approved' ? 'confirmed' : u.driver_status === 'pending' ? 'pending' : 'cancelled'}">driver ${u.driver_status}</span>` : ''}
-              ${u.phone_verified ? '<span class="badge">📱 verified</span>' : ''}
+              <span class="badge ${u.email_verified ? 'confirmed' : ''}">✉️ email ${u.email_verified ? 'verified' : 'not verified'}</span>
+              ${u.traveler_type === 'student' && u.student_status !== 'none' ? `<span class="badge">🎓 ${u.student_status}</span>` : ''}
               <span class="badge">${money(u.wallet_balance)}</span>
               <span class="badge ${u.reliability < settings.reliability_threshold ? 'cancelled' : ''}">${u.reliability}% reliable</span>
               ${u.suspended ? '<span class="badge cancelled">suspended</span>' : ''}
             </div>
+            <details class="small" style="margin-top:6px"><summary>Verify by hand</summary>
+              <p class="muted" style="margin:6px 0">Only after checking it yourself (e.g. a call, or the CNIC seen in person). Documents waiting for review are in the Verifications tab.</p>
+              <div class="actions">
+                <button class="btn small ${u.email_verified ? 'ghost' : ''}" data-action="hand-verify" data-user="${u.id}" data-field="email" data-value="${u.email_verified ? 0 : 1}">${u.email_verified ? 'Un-verify email' : '✉️ Mark email verified'}</button>
+                <button class="btn small ${u.verification_status === 'verified' ? 'ghost' : ''}" data-action="hand-verify" data-user="${u.id}" data-field="identity" data-value="${u.verification_status === 'verified' ? 0 : 1}">${u.verification_status === 'verified' ? 'Remove ID verification' : '🪪 Mark ID verified'}</button>
+                ${u.traveler_type === 'student' ? `<button class="btn small ${u.student_status === 'verified' ? 'ghost' : ''}" data-action="hand-verify" data-user="${u.id}" data-field="student" data-value="${u.student_status === 'verified' ? 0 : 1}">${u.student_status === 'verified' ? 'Remove student status' : '🎓 Mark student verified'}</button>` : ''}
+                ${u.driver_status !== 'none' ? `<button class="btn small ${u.driver_status === 'approved' ? 'ghost' : ''}" data-action="hand-verify" data-user="${u.id}" data-field="driver" data-value="${u.driver_status === 'approved' ? 0 : 1}">${u.driver_status === 'approved' ? 'Remove driver approval' : '🚗 Approve as driver'}</button>` : ''}
+              </div>
+            </details>
             <details class="small" style="margin-top:6px"><summary>Wallet & reliability</summary>
               <form class="adjust" data-user="${u.id}" style="margin-top:8px">
                 <div class="row two">
@@ -2808,9 +2832,17 @@ views.admin = async (page, q) => {
     }));
     onClick(body, async (action, data) => {
       if (action === 'temp-password') {
-        if (!confirm(`Set a temporary password for ${data.name}? Only do this after checking it is really them (e.g. call their verified phone). They will be logged out everywhere.`)) return;
+        if (!confirm(`Set a temporary password for ${data.name}? Only do this after checking it is really them (e.g. call them and ask details only they know). They will be logged out everywhere.`)) return;
         const res = await api(`/admin/users/${data.user}/temp-password`, { method: 'POST' });
         prompt(`Temporary password for ${data.name}. Tell them to change it in Profile → Change password after logging in.`, res.password);
+        return;
+      }
+      if (action === 'hand-verify') {
+        const on = data.value === '1';
+        if (!confirm(on ? 'Mark this as verified? Do this only after checking it yourself.' : 'Remove this verification?')) return;
+        await api(`/admin/users/${data.user}/verify`, { method: 'POST', body: { [data.field]: on } });
+        toast('Updated');
+        render();
         return;
       }
       if (action !== 'suspend') return;
@@ -3032,7 +3064,7 @@ function parseHash() {
 
 const NAV_GROUP = {
   search: 'home', requests: 'offer', 'request-offer': 'offer', register: 'login', forgot: 'login', chat: 'inbox', admin: 'profile', user: 'home', ride: 'trips',
-  'verify-phone': 'profile', 'verify-id': 'profile', driver: 'offer', wallet: 'profile', 'accept-terms': 'profile', 'how-it-works': 'home',
+  'verify-phone': 'profile', 'verify-email': 'profile', 'verify-id': 'profile', driver: 'offer', wallet: 'profile', 'accept-terms': 'profile', 'how-it-works': 'home',
 };
 
 function renderNav(active) {

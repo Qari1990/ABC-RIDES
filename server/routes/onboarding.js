@@ -7,7 +7,6 @@ const { rateLimiter } = require('../security');
 const { transaction } = require('../db');
 const { HttpError, bad, str, int } = require('../errors');
 const { notify } = require('../notify');
-const { smsConfigured, sendSms, normalizePhone } = require('../sms');
 const { emailConfigured, sendEmail } = require('../email');
 const { decodeImage, saveDocuments } = require('../uploads');
 const { selfUser } = require('./users');
@@ -31,13 +30,27 @@ module.exports = function onboardingRouter(db, { uploadDir }) {
   const reload = (id) => db.prepare('SELECT * FROM users WHERE id = ?').get(id);
   const bigJson = express.json({ limit: '25mb' });
 
-  // ---- Phone verification (one-time code by SMS) ---------------------------
+  // ---- Email verification (one-time code by email, free with Brevo) -------
+  //
+  // Proves the member owns their email address. Without an email service
+  // (local development and tests) the code is handed back to show on screen.
 
-  router.post('/me/phone/send-code', requireUser, async (req, res) => {
-    const u = req.user;
-    if (u.phone_verified) throw bad('Your phone number is already verified');
+  router.post('/me/email/send-code', requireUser, async (req, res) => {
+    let u = req.user;
+    if (u.email_verified) throw bad('Your email address is already verified');
+    // A member who mistyped their address at sign-up can correct it here.
+    const b = req.body || {};
+    if (b.email !== undefined && String(b.email).trim().toLowerCase() !== u.email) {
+      const email = str(b.email, 'Email', { required: true, max: 120 }).trim().toLowerCase();
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw bad('Please enter a valid email address');
+      if (db.prepare('SELECT 1 FROM users WHERE email = ? AND id != ?').get(email, u.id)) {
+        throw new HttpError(409, 'An account with this email already exists');
+      }
+      db.prepare('UPDATE users SET email = ? WHERE id = ?').run(email, u.id);
+      u = reload(u.id);
+    }
     const now = Date.now();
-    const prev = db.prepare('SELECT * FROM phone_codes WHERE user_id = ?').get(u.id);
+    const prev = db.prepare('SELECT * FROM email_codes WHERE user_id = ?').get(u.id);
     if (prev && now - new Date(prev.sent_at) < RESEND_AFTER_MS) {
       throw new HttpError(429, 'Please wait a minute before requesting another code');
     }
@@ -48,45 +61,41 @@ module.exports = function onboardingRouter(db, { uploadDir }) {
     const code = String(crypto.randomInt(100000, 1000000));
     const iso = new Date(now).toISOString();
     db.prepare(`
-      INSERT INTO phone_codes (user_id, code_hash, expires_at, attempts, sent_at, window_start, sent_count)
+      INSERT INTO email_codes (user_id, code_hash, expires_at, attempts, sent_at, window_start, sent_count)
       VALUES (?, ?, ?, 0, ?, ?, 1)
       ON CONFLICT(user_id) DO UPDATE SET code_hash = excluded.code_hash, expires_at = excluded.expires_at, attempts = 0,
         sent_at = excluded.sent_at, window_start = ?, sent_count = ?`)
       .run(u.id, hashCode(u.id, code), new Date(now + CODE_TTL_MS).toISOString(), iso, iso,
         sameWindow ? prev.window_start : iso, sameWindow ? prev.sent_count + 1 : 1);
 
-    const message = `Your ABC Rides code is ${code}. It expires in 10 minutes. Never share it with anyone.`;
-    if (smsConfigured()) {
+    if (emailConfigured()) {
       try {
-        await sendSms(`+${normalizePhone(u.phone)}`, message);
+        await sendEmail(u.email, `Your ABC Rides code: ${code}`,
+          `Assalam-o-Alaikum ${u.name},\n\nYour ABC Rides verification code is ${code}. It expires in 10 minutes.\n\nNever share this code with anyone. If you didn't sign up for ABC Rides, ignore this email.\n\nABC Rides`);
       } catch (err) {
-        console.error('SMS failed:', err.message);
-        throw Object.assign(new HttpError(502, 'Could not send the SMS right now. Please try again shortly.'), { expected: true });
+        console.error('Verification email failed:', err.message);
+        throw Object.assign(new HttpError(502, 'Could not send the email right now. Please try again shortly.'), { expected: true });
       }
-      return res.json({ sent_to: u.phone });
+      return res.json({ sent_to: u.email });
     }
-    // Development mode: no SMS provider configured, so hand the code back.
-    console.log(`[dev] phone code for user ${u.id}: ${code}`);
-    res.json({ sent_to: u.phone, dev_code: code });
+    console.log(`[dev] email code for user ${u.id}: ${code}`);
+    res.json({ sent_to: u.email, dev_code: code });
   });
 
-  router.post('/me/phone/verify', requireUser, (req, res) => {
+  router.post('/me/email/verify', requireUser, (req, res) => {
     const u = req.user;
     const code = String((req.body && req.body.code) || '').trim();
-    const row = db.prepare('SELECT * FROM phone_codes WHERE user_id = ?').get(u.id);
+    const row = db.prepare('SELECT * FROM email_codes WHERE user_id = ?').get(u.id);
     if (!row || new Date(row.expires_at) < new Date()) throw bad('This code has expired. Please request a new one.');
     if (row.attempts >= MAX_ATTEMPTS) throw bad('Too many wrong attempts. Please request a new code.');
     const ok = /^\d{6}$/.test(code)
       && crypto.timingSafeEqual(Buffer.from(hashCode(u.id, code)), Buffer.from(row.code_hash));
     if (!ok) {
-      db.prepare('UPDATE phone_codes SET attempts = attempts + 1 WHERE user_id = ?').run(u.id);
+      db.prepare('UPDATE email_codes SET attempts = attempts + 1 WHERE user_id = ?').run(u.id);
       throw bad(`Wrong code. ${MAX_ATTEMPTS - row.attempts - 1} attempt(s) left.`);
     }
-    const phone = normalizePhone(u.phone);
-    const taken = db.prepare('SELECT 1 FROM users WHERE verified_phone = ? AND id != ?').get(phone, u.id);
-    if (taken) throw new HttpError(409, 'This phone number is already verified on another account');
-    db.prepare('UPDATE users SET phone_verified = 1, verified_phone = ? WHERE id = ?').run(phone, u.id);
-    db.prepare('DELETE FROM phone_codes WHERE user_id = ?').run(u.id);
+    db.prepare('UPDATE users SET email_verified = 1 WHERE id = ?').run(u.id);
+    db.prepare('DELETE FROM email_codes WHERE user_id = ?').run(u.id);
     res.json(selfUser(db, reload(u.id)));
   });
 
@@ -196,40 +205,35 @@ module.exports = function onboardingRouter(db, { uploadDir }) {
     res.json(selfUser(db, reload(req.user.id)));
   });
 
-  // ---- Forgot password (code by email or SMS) -------------------------------
+  // ---- Forgot password (code by email) --------------------------------------
   //
-  // By email (free with Brevo) for any account, or by SMS to a verified phone.
-  // The code is never shown on screen (that would let anyone take over any
-  // account): with neither service set up, an admin sets a temporary password.
+  // By email (free with Brevo). The code is never shown on screen (that would
+  // let anyone take over any account): without email, an admin sets a
+  // temporary password.
   const resetLimit = rateLimiter({ windowMs: 60 * 60 * 1000, max: 10, message: 'Too many reset attempts. Please try again in an hour.' });
 
-  // Who is resetting: an email address (code by email) or a verified phone
-  // (code by SMS). Returns { channel, user } (user may be null).
+  // Who is resetting: the account's email address.
   const resetTarget = (body) => {
-    const login = str(body.login ?? body.email ?? body.phone, 'Email or phone', { required: true, max: 120 }).trim();
-    if (login.includes('@')) {
-      return { channel: 'email', to: login.toLowerCase(), user: db.prepare('SELECT * FROM users WHERE email = ?').get(login.toLowerCase()) || null };
-    }
-    const phone = normalizePhone(login);
-    return { channel: 'sms', to: phone, user: (phone && db.prepare('SELECT * FROM users WHERE verified_phone = ?').get(phone)) || null };
+    const login = str(body.login ?? body.email, 'Email', { required: true, max: 120 }).trim().toLowerCase();
+    if (!login.includes('@')) throw bad('Enter the email address of your account');
+    return { to: login, user: db.prepare('SELECT * FROM users WHERE email = ?').get(login) || null };
   };
 
-  // Which ways of resetting are switched on, so the app can say so up front.
-  router.get('/auth/reset/options', (_req, res) => res.json({ email: emailConfigured(), sms: smsConfigured() }));
+  // Whether reset by email is switched on, so the app can say so up front.
+  router.get('/auth/reset/options', (_req, res) => res.json({ email: emailConfigured() }));
 
   router.post('/auth/reset/send', async (req, res) => {
     resetLimit.check(`send|${req.ip}`);
     resetLimit.hit(`send|${req.ip}`);
-    const { channel, to, user: u } = resetTarget(req.body || {});
-    if (channel === 'email' ? !emailConfigured() : !smsConfigured()) {
-      const other = channel === 'email' ? smsConfigured() && 'your verified phone number' : emailConfigured() && 'your email address';
-      const err = new HttpError(503, `Password reset by ${channel === 'email' ? 'email' : 'SMS'} is not switched on yet. ${other ? `Try ${other} instead, or contact` : 'Please contact'} ABC Rides support to reset your password.`);
+    const { to, user: u } = resetTarget(req.body || {});
+    if (!emailConfigured()) {
+      const err = new HttpError(503, 'Password reset by email is not switched on yet. Please contact ABC Rides support to reset your password.');
       err.code = 'reset_unavailable';
       err.expected = true; // a known state, not a crash: show the message, don't log it
       throw err;
     }
     // Same answer whether or not there is an account, so addresses can't be probed.
-    const reply = { sent: true, message: `If this ${channel === 'email' ? 'email' : 'number'} has an ABC Rides account, a code is on its way.` };
+    const reply = { sent: true, message: 'If this email has an ABC Rides account, a code is on its way.' };
     if (!u || u.suspended) return res.json(reply);
     const prev = db.prepare('SELECT * FROM reset_codes WHERE user_id = ?').get(u.id);
     if (prev && Date.now() - new Date(prev.sent_at) < RESEND_AFTER_MS) return res.json(reply);
@@ -238,15 +242,11 @@ module.exports = function onboardingRouter(db, { uploadDir }) {
       ON CONFLICT(user_id) DO UPDATE SET code_hash = excluded.code_hash, expires_at = excluded.expires_at, attempts = 0, sent_at = excluded.sent_at`)
       .run(u.id, hashCode(u.id, code), new Date(Date.now() + CODE_TTL_MS).toISOString(), new Date().toISOString());
     try {
-      if (channel === 'email') {
-        await sendEmail(to, `Your ABC Rides code: ${code}`,
-          `Assalam-o-Alaikum ${u.name},\n\nYour ABC Rides password reset code is ${code}. It expires in 10 minutes.\n\nIf you didn't ask to reset your password, ignore this email; your account is safe.\n\nABC Rides`);
-      } else {
-        await sendSms(`+${to}`, `Your ABC Rides password reset code is ${code}. If you didn't ask for it, ignore this message.`);
-      }
+      await sendEmail(to, `Your ABC Rides code: ${code}`,
+        `Assalam-o-Alaikum ${u.name},\n\nYour ABC Rides password reset code is ${code}. It expires in 10 minutes.\n\nIf you didn't ask to reset your password, ignore this email; your account is safe.\n\nABC Rides`);
     } catch (err) {
-      console.error(`${channel} failed:`, err.message);
-      throw Object.assign(new HttpError(502, `Could not send the ${channel === 'email' ? 'email' : 'SMS'} right now. Please try again shortly.`), { expected: true });
+      console.error('Reset email failed:', err.message);
+      throw Object.assign(new HttpError(502, 'Could not send the email right now. Please try again shortly.'), { expected: true });
     }
     res.json(reply);
   });
@@ -298,7 +298,7 @@ module.exports = function onboardingRouter(db, { uploadDir }) {
         phone_verified = 0, licence_number = NULL, suspended = 1, role = 'user' WHERE id = ?`)
         .run(`deleted-${u.id}@deleted.invalid`, crypto.randomBytes(32).toString('hex'), u.id);
       db.prepare(`UPDATE request_offers SET status = 'withdrawn' WHERE driver_id = ? AND status = 'pending'`).run(u.id);
-      for (const t of ['documents', 'vehicles', 'phone_codes', 'reset_codes', 'push_subscriptions', 'app_push_tokens', 'sessions', 'notifications', 'ride_requests']) {
+      for (const t of ['documents', 'vehicles', 'phone_codes', 'email_codes', 'reset_codes', 'push_subscriptions', 'app_push_tokens', 'sessions', 'notifications', 'ride_requests']) {
         const col = t === 'ride_requests' ? 'passenger_id' : 'user_id';
         db.prepare(`DELETE FROM ${t} WHERE ${col} = ?`).run(u.id);
       }

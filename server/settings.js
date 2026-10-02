@@ -51,7 +51,7 @@ const SPEC = {
   car_km_per_litre: { default: 13, min: 1, max: 50, label: 'Typical car mileage (km per litre)' },
   ref_bus_per_km: { default: 7, min: 0, max: 100, label: 'Bus fare per km per seat, for comparison (Rs)' },
   ref_private_car_per_km: { default: 15, min: 0, max: 200, label: 'Private car fare per km, whole car, for comparison (Rs)' },
-  require_phone_verification: { default: true, label: 'Phone must be verified to book or post rides' },
+  require_email_verification: { default: true, label: 'Email must be verified (code by email) to book or post rides' },
   require_id_for_booking: { default: false, label: 'Passengers must be ID-verified to book' },
   require_driver_approval: { default: true, label: 'Drivers must be approved before posting rides' },
   student_price_requires_verification: { default: true, label: 'Student prices only for verified students' },

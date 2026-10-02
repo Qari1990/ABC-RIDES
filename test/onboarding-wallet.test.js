@@ -12,7 +12,7 @@ const FAKE_PNG = `data:image/png;base64,${Buffer.from('<script>alert(1)</script>
 
 // Production defaults: everything on.
 const STRICT = {
-  require_phone_verification: true,
+  require_email_verification: true,
   require_driver_approval: true,
   student_price_requires_verification: true,
   driver_commission_pct: 0,
@@ -23,7 +23,6 @@ const STRICT = {
 
 before(async () => {
   process.env.ADMIN_EMAILS = 'admin@test.pk';
-  delete process.env.SMS_GATEWAY_URL;
   ({ db, call, register, close } = await startServer({ settings: STRICT }));
   admin = await register({ email: 'admin@test.pk' });
 });
@@ -33,10 +32,10 @@ after(() => close());
 let phoneCounter = 1000000;
 const uniquePhone = () => `0300 ${phoneCounter++}`;
 
-async function verifyPhone(u) {
-  const sent = await call('POST', '/me/phone/send-code', { token: u.token });
+async function verifyEmail(u) {
+  const sent = await call('POST', '/me/email/send-code', { token: u.token });
   assert.equal(sent.status, 200, JSON.stringify(sent.body));
-  const ok = await call('POST', '/me/phone/verify', { token: u.token, body: { code: sent.body.dev_code } });
+  const ok = await call('POST', '/me/email/verify', { token: u.token, body: { code: sent.body.dev_code } });
   assert.equal(ok.status, 200, JSON.stringify(ok.body));
   return ok.body;
 }
@@ -58,10 +57,10 @@ async function applyAsDriver(u, vehicle = VEHICLE) {
   });
 }
 
-// A fully onboarded user: verified phone, approved identity (and driver, if asked).
+// A fully onboarded user: verified email, approved identity (and driver, if asked).
 async function onboard({ driver = false, ...overrides } = {}) {
   const u = await register({ phone: uniquePhone(), ...overrides });
-  await verifyPhone(u);
+  await verifyEmail(u);
   assert.equal((await submitIdentity(u)).status, 200);
   if (driver) assert.equal((await applyAsDriver(u)).status, 200);
   assert.equal((await call('POST', `/admin/users/${u.user.id}/review`, { token: admin.token, body: { approve: true } })).status, 200);
@@ -78,39 +77,42 @@ async function topUp(u, amount) {
 const balance = async (u) => (await call('GET', '/me/wallet', { token: u.token })).body.balance;
 const me = async (u) => (await call('GET', '/me', { token: u.token })).body;
 
-test('phone verification with one-time codes', async () => {
-  const u = await register({ phone: '0300 5550001' });
-  const sent = await call('POST', '/me/phone/send-code', { token: u.token });
-  assert.match(sent.body.dev_code, /^\d{6}$/, 'dev mode returns the code when no SMS gateway is set');
-  assert.equal((await call('POST', '/me/phone/send-code', { token: u.token })).status, 429, 'resend is rate limited');
+test('email verification with one-time codes, and by hand by an admin', async () => {
+  const u = await register({ email: 'typo@test' + '.pk' });
+  const sent = await call('POST', '/me/email/send-code', { token: u.token });
+  assert.match(sent.body.dev_code, /^\d{6}$/, 'dev mode returns the code when no email service is set');
+  assert.equal((await call('POST', '/me/email/send-code', { token: u.token })).status, 429, 'resend is rate limited');
 
-  const wrong = await call('POST', '/me/phone/verify', { token: u.token, body: { code: '000000' === sent.body.dev_code ? '111111' : '000000' } });
+  const wrong = await call('POST', '/me/email/verify', { token: u.token, body: { code: '000000' === sent.body.dev_code ? '111111' : '000000' } });
   assert.equal(wrong.status, 400);
   assert.match(wrong.body.error, /4 attempt/);
-  const ok = await call('POST', '/me/phone/verify', { token: u.token, body: { code: sent.body.dev_code } });
-  assert.equal(ok.body.phone_verified, true);
+  const ok = await call('POST', '/me/email/verify', { token: u.token, body: { code: sent.body.dev_code } });
+  assert.equal(ok.body.email_verified, true);
+  assert.equal((await call('POST', '/me/email/send-code', { token: u.token })).status, 400, 'already verified');
 
-  // The same number cannot be verified on a second account.
-  const twin = await register({ phone: '+92 300 5550001' });
-  const code = (await call('POST', '/me/phone/send-code', { token: twin.token })).body.dev_code;
-  assert.equal((await call('POST', '/me/phone/verify', { token: twin.token, body: { code } })).status, 409);
+  // A mistyped address can be corrected before verifying, but not to someone else's.
+  const typo = await register({ email: 'wrongaddress@test.pk' });
+  assert.equal((await call('POST', '/me/email/send-code', { token: typo.token, body: { email: 'typo@test.pk' } })).status, 409);
+  const fixed = await call('POST', '/me/email/send-code', { token: typo.token, body: { email: 'Right.Address@test.pk' } });
+  assert.equal(fixed.body.sent_to, 'right.address@test.pk');
+  assert.equal((await call('POST', '/auth/login', { body: { email: 'right.address@test.pk', password: 'secret123' } })).status, 200);
 
-  // Log in with the verified phone instead of email.
-  const login = await call('POST', '/auth/login', { body: { email: '03005550001', password: 'secret123' } });
-  assert.equal(login.status, 200);
-  assert.equal(login.body.user.id, u.user.id);
-
-  // Changing the number means verifying again.
-  const changed = await call('PATCH', '/me', { token: u.token, body: { phone: '0300 5550002' } });
-  assert.equal(changed.body.phone_verified, false);
+  // An admin can verify by hand (and only an admin).
+  assert.equal((await call('POST', `/admin/users/${typo.user.id}/verify`, { token: u.token, body: { email: true } })).status, 403);
+  const hand = await call('POST', `/admin/users/${typo.user.id}/verify`, { token: admin.token, body: { email: true, identity: true } });
+  assert.equal(hand.status, 200, JSON.stringify(hand.body));
+  assert.equal(hand.body.email_verified, true);
+  assert.equal(hand.body.verification_status, 'verified');
+  assert.equal((await call('POST', `/admin/users/${typo.user.id}/verify`, { token: admin.token, body: { driver: true } })).status, 400, 'no car, no driver approval');
+  assert.equal((await call('POST', `/admin/users/${typo.user.id}/verify`, { token: admin.token, body: {} })).status, 400);
 });
 
-test('onboarding gates: phone before booking, approval before posting rides', async () => {
+test('onboarding gates: email before booking, approval before posting rides', async () => {
   const driverish = await register({ phone: uniquePhone() });
   let res = await call('POST', '/rides', { token: driverish.token, body: rideBody() });
   assert.equal(res.status, 403);
-  assert.equal(res.body.code, 'phone_unverified');
-  await verifyPhone(driverish);
+  assert.equal(res.body.code, 'email_unverified');
+  await verifyEmail(driverish);
   res = await call('POST', '/rides', { token: driverish.token, body: rideBody() });
   assert.equal(res.body.code, 'driver_required');
 
@@ -118,9 +120,9 @@ test('onboarding gates: phone before booking, approval before posting rides', as
   const ride = (await call('POST', '/rides', { token: driver.token, body: rideBody() })).body[0];
   const unverified = await register({ phone: uniquePhone() });
   res = await call('POST', `/rides/${ride.id}/bookings`, { token: unverified.token, body: {} });
-  assert.equal(res.body.code, 'phone_unverified');
+  assert.equal(res.body.code, 'email_unverified');
   res = await call('POST', '/ride-requests', { token: unverified.token, body: {} });
-  assert.equal(res.body.code, 'phone_unverified');
+  assert.equal(res.body.code, 'email_unverified');
 });
 
 test('identity verification: CNIC checks, real images, one account per CNIC', async () => {
@@ -157,7 +159,7 @@ test('student prices only for verified students', async () => {
   const ride = (await call('POST', '/rides', { token: driver.token, body: rideBody() })).body[0];
   const student = await register({ phone: uniquePhone(), traveler_type: 'student' });
   assert.equal((await call('GET', `/rides/${ride.id}`, { token: student.token })).body.your_price, 2000);
-  await verifyPhone(student);
+  await verifyEmail(student);
   await submitIdentity(student, { student_card: PNG });
   await call('POST', `/admin/users/${student.user.id}/review`, { token: admin.token, body: { approve: true } });
   assert.equal((await me(student)).student_verified, true);
@@ -166,7 +168,7 @@ test('student prices only for verified students', async () => {
 
 test('driver registration: vehicle checks, approval, plate shown only to confirmed passengers', async () => {
   const u = await register({ phone: uniquePhone() });
-  await verifyPhone(u);
+  await verifyEmail(u);
   assert.match((await applyAsDriver(u)).body.error, /verify your identity/);
   await submitIdentity(u);
   assert.match((await applyAsDriver(u, { ...VEHICLE, plate: '!!' })).body.error, /plate/i);
@@ -411,42 +413,6 @@ test('security: login lockout and headers', async () => {
   assert.match(page.headers.get('content-security-policy'), /default-src 'self'/);
   assert.equal(page.headers.get('x-frame-options'), 'DENY');
   assert.equal(page.headers.get('x-content-type-options'), 'nosniff');
-});
-
-test('forgot password: off without SMS; with SMS a texted code sets a new password', async () => {
-  const u = await register({ email: 'forgetful@test.pk', phone: uniquePhone() });
-  await verifyPhone(u);
-  const phone = (await call('GET', '/me', { token: u.token })).body.phone;
-
-  // No SMS provider: reset would have to show the code on screen, so it is refused.
-  const off = await call('POST', '/auth/reset/send', { body: { phone } });
-  assert.equal(off.status, 503);
-  assert.equal(off.body.code, 'reset_unavailable');
-
-  // A fake SMS provider that remembers the last message.
-  const http = require('node:http');
-  let lastSms = null;
-  const sms = http.createServer((req, res) => { lastSms = new URL(req.url, 'http://x').searchParams.get('text'); res.end('ok'); }).listen(0);
-  await new Promise((r) => sms.once('listening', r));
-  process.env.SMS_GATEWAY_URL = `http://127.0.0.1:${sms.address().port}/send?to={to}&text={message}`;
-  try {
-    const unknown = await call('POST', '/auth/reset/send', { body: { phone: '0399 9999999' } });
-    assert.equal(unknown.status, 200, 'unknown numbers get the same answer');
-    assert.equal(lastSms, null);
-
-    assert.equal((await call('POST', '/auth/reset/send', { body: { phone } })).status, 200);
-    const code = lastSms.match(/\d{6}/)[0];
-    const bad = await call('POST', '/auth/reset/confirm', { body: { phone, code: code === '111111' ? '222222' : '111111', new_password: 'brandnew123' } });
-    assert.equal(bad.status, 400);
-    assert.equal((await call('POST', '/auth/reset/confirm', { body: { phone, code, new_password: 'brandnew123' } })).status, 204);
-
-    assert.equal((await call('GET', '/me', { token: u.token })).status, 401, 'old sessions are signed out');
-    assert.equal((await call('POST', '/auth/login', { body: { email: 'forgetful@test.pk', password: 'brandnew123' } })).status, 200);
-    assert.equal((await call('POST', '/auth/reset/confirm', { body: { phone, code, new_password: 'again12345' } })).status, 400, 'codes work once');
-  } finally {
-    delete process.env.SMS_GATEWAY_URL;
-    sms.close();
-  }
 });
 
 test('admin can set a temporary password', async () => {

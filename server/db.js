@@ -179,6 +179,18 @@ CREATE TABLE IF NOT EXISTS reset_codes (
   sent_at     TEXT NOT NULL
 );
 
+-- One-time codes sent by email to confirm a member's address.
+CREATE TABLE IF NOT EXISTS email_codes (
+  user_id       INTEGER PRIMARY KEY REFERENCES users(id),
+  code_hash     TEXT NOT NULL,
+  expires_at    TEXT NOT NULL,
+  attempts      INTEGER NOT NULL DEFAULT 0,
+  sent_at       TEXT NOT NULL,
+  window_start  TEXT NOT NULL,
+  sent_count    INTEGER NOT NULL DEFAULT 1
+);
+
+-- No longer used (phone codes by SMS were replaced by email codes); kept so old databases load.
 CREATE TABLE IF NOT EXISTS phone_codes (
   user_id       INTEGER PRIMARY KEY REFERENCES users(id),
   code_hash     TEXT NOT NULL,
@@ -340,6 +352,7 @@ const ADDED_COLUMNS = {
     emergency_phone: 'TEXT',
     phone_verified: 'INTEGER NOT NULL DEFAULT 0',
     verified_phone: 'TEXT',
+    email_verified: 'INTEGER NOT NULL DEFAULT 0',
     cnic: 'TEXT',
     student_status: `TEXT NOT NULL DEFAULT 'none'`,
     driver_status: `TEXT NOT NULL DEFAULT 'none'`,

@@ -7,7 +7,7 @@ const { HttpError, bad, str, int } = require('../errors');
 const { notify } = require('../notify');
 const { getSettings, setSettings, settingsSpec } = require('../settings');
 const { applyTxn } = require('../wallet');
-const { smsConfigured } = require('../sms');
+const { emailConfigured } = require('../email');
 const { backupStatus } = require('../backup');
 
 module.exports = function adminRouter(db, { uploadDir }) {
@@ -23,7 +23,7 @@ module.exports = function adminRouter(db, { uploadDir }) {
     id: u.id, name: u.name, email: u.email, phone: u.phone, traveler_type: u.traveler_type, gender: u.gender,
     organization: u.organization, role: u.role, suspended: !!u.suspended, verification_status: u.verification_status,
     verification_doc_type: u.verification_doc_type, created_at: u.created_at,
-    phone_verified: !!u.phone_verified, cnic: u.cnic ? `${u.cnic.slice(0, 5)}-${u.cnic.slice(5, 12)}-${u.cnic.slice(12)}` : null,
+    phone_verified: !!u.phone_verified, email_verified: !!u.email_verified, cnic: u.cnic ? `${u.cnic.slice(0, 5)}-${u.cnic.slice(5, 12)}-${u.cnic.slice(12)}` : null,
     student_status: u.student_status, driver_status: u.driver_status, licence_number: u.licence_number,
     reliability: u.reliability, wallet_balance: u.wallet_balance,
   });
@@ -87,7 +87,7 @@ module.exports = function adminRouter(db, { uploadDir }) {
       revenue_30d: -db.prepare(`SELECT COALESCE(SUM(amount), 0) n FROM wallet_transactions
         WHERE type IN ('commission', 'fee', 'refund') AND created_at > ?`).get(new Date(Date.now() - 30 * 864e5).toISOString()).n,
       wallet_total: db.prepare('SELECT COALESCE(SUM(wallet_balance), 0) n FROM users').get().n,
-      sms_configured: smsConfigured(),
+      email_configured: emailConfigured(),
       backup: backupStatus(),
       pending_car_changes: db.prepare('SELECT COUNT(*) n FROM vehicles WHERE pending_change IS NOT NULL').get().n,
       errors_7d: db.prepare(`SELECT COUNT(*) n FROM error_log WHERE created_at > ?`).get(new Date(Date.now() - 7 * 864e5).toISOString()).n,
@@ -151,6 +151,40 @@ module.exports = function adminRouter(db, { uploadDir }) {
         approve ? `Approved: ${done.join(', ')}.${done.includes('driver registration') ? ' You can now post rides.' : ''}`
           : `Not approved: ${done.join(', ')}. ${note || 'Please upload clearer photos and try again.'}`,
         '/profile');
+    });
+    res.json(summary(getUser(user.id)));
+  });
+
+  // Verifies (or un-verifies) a member by hand, e.g. after checking their CNIC in
+  // person or when their verification email never arrives.
+  // Body: { email?: bool, identity?: bool, student?: bool, driver?: bool }
+  router.post('/users/:id/verify', (req, res) => {
+    const user = getUser(req.params.id);
+    const b = req.body || {};
+    const done = [];
+    transaction(db, () => {
+      if (typeof b.email === 'boolean') {
+        db.prepare('UPDATE users SET email_verified = ? WHERE id = ?').run(b.email ? 1 : 0, user.id);
+        done.push(b.email ? 'email verified' : 'email unverified');
+      }
+      if (typeof b.identity === 'boolean') {
+        db.prepare('UPDATE users SET verification_status = ?, verification_note = NULL WHERE id = ?').run(b.identity ? 'verified' : 'none', user.id);
+        done.push(b.identity ? 'ID verified' : 'ID verification removed');
+      }
+      if (typeof b.student === 'boolean') {
+        if (user.traveler_type !== 'student') throw bad('This member is not a student');
+        db.prepare('UPDATE users SET student_status = ? WHERE id = ?').run(b.student ? 'verified' : 'none', user.id);
+        done.push(b.student ? 'student card verified' : 'student verification removed');
+      }
+      if (typeof b.driver === 'boolean') {
+        if (b.driver && !db.prepare('SELECT 1 FROM vehicles WHERE user_id = ?').get(user.id)) {
+          throw bad('This member has not registered a car yet; they apply in Driver first');
+        }
+        db.prepare('UPDATE users SET driver_status = ?, driver_note = NULL WHERE id = ?').run(b.driver ? 'approved' : 'none', user.id);
+        done.push(b.driver ? 'approved as a driver' : 'driver approval removed');
+      }
+      if (!done.length) throw bad('Nothing to change');
+      notify(db, user.id, 'Your account was updated by ABC Rides', `${done.join(', ')}.`.replace(/^./, (c) => c.toUpperCase()), '/profile');
     });
     res.json(summary(getUser(user.id)));
   });

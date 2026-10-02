@@ -41,7 +41,7 @@ Drivers who are already going between cities post their empty seats; passengers 
 - **Error log**: crashes on users' phones and server errors appear in **Admin → Errors**.
 - **Push notifications**: booking, ride and chat alerts with the app closed, turned on in Inbox or Profile. The
   Android app uses Firebase Cloud Messaging (free); browsers and home-screen web apps use Web Push (no account).
-- **Forgot password**: a code by email (free Brevo account) or SMS; otherwise an admin sets a temporary password.
+- **Forgot password**: a code by email (free Brevo account); otherwise an admin sets a temporary password.
 - **Road-following route lines** on maps (OSRM's free routing server, cached on our server).
 - **Popular pickup & drop-off points**: about 110 well-known points across 48 cities (Thokar Niaz Baig, Kalma
   Chowk, Faizabad, Sohrab Goth…) with coordinates. Admins correct or add points by pasting coordinates from Google Maps.
@@ -74,7 +74,7 @@ Drivers who are already going between cities post their empty seats; passengers 
 - **Payments**: drivers choose accepted methods (cash, JazzCash, Easypaisa, bank transfer); their account details are shown only to confirmed passengers.
 - **Safety**: SOS panel with one-tap calls to Police 15, Rescue 1122 and Motorway Police 130, an SMS to your emergency contact with trip details and current location, trip sharing, and reporting users.
 - **Ride editing**: drivers can update pickup/drop-off, vehicle, notes and payment details; passengers are notified.
-- **Onboarding with security**: sign up on one screen, then verify the phone with an SMS code. Identity
+- **Onboarding with security**: sign up on one screen, then verify the email address with a 6-digit code sent by email (free with Brevo; SMS costs money in Pakistan, so it is not used). Admins can also verify members by hand in **Admin → Users**. Identity
   verification takes a CNIC number, CNIC front/back photos and a selfie (plus a student card for student prices).
   Drivers register once with their licence and vehicle (make, model, year, colour, plate, seats, car photo,
   registration). An admin reviews everything in one place. One account per CNIC and per phone number; photos are
@@ -126,8 +126,6 @@ Environment variables:
 | `DB_FILE` | `data/abc-rides.db` | SQLite database file |
 | `UPLOAD_DIR` | `data/uploads` | Uploaded ID documents (private, admin-only) |
 | `ADMIN_EMAILS` | | Comma-separated emails that get the admin role |
-| `SMS_GATEWAY_URL` | | SMS provider send URL with `{to}` and `{message}` placeholders. Unset = development mode: phone codes are shown on screen |
-| `SMS_GATEWAY_METHOD` | `GET` | HTTP method for the SMS URL |
 | `SIGNUP_LIMIT_PER_HOUR` | `100` | Sign-ups allowed per network address per hour |
 | `ROUTING_URL` | `https://router.project-osrm.org` | OSRM server used by "Update distances from maps" |
 | `DATABASE_URL` | | PostgreSQL address (e.g. a free [Neon](https://neon.tech) database). The SQLite database and uploaded photos are copied there after every change and restored on start-up, so hosts that wipe the disk (Render free) keep all data |
@@ -140,11 +138,11 @@ Environment variables:
 | `KEEP_AWAKE_URL` | `RENDER_EXTERNAL_URL` | Public address the server pings every 10 minutes so free hosting doesn't put it to sleep (`KEEP_AWAKE=0` turns it off) |
 
 Fees, booking mode and onboarding requirements are changed in the app under **Admin → Settings**.
-Default policy: phone verification required, drivers must be approved, student prices need a verified student
+Default policy: email verification required, drivers must be approved, student prices need a verified student
 card, drivers pay 5% and passengers 2% after 3 free confirmations, reliability threshold 70% with a Rs 100 fee.
 
-**Before going live**, set `SMS_GATEWAY_URL` (otherwise anyone can verify any phone number, since the code is shown
-on screen) and replace the placeholder top-up accounts in Admin → Settings with your real JazzCash/Easypaisa numbers.
+**Before going live**, set `BREVO_API_KEY` and `EMAIL_FROM` (otherwise verification codes are shown on screen, so
+anyone could verify any email address) and replace the placeholder top-up accounts in Admin → Settings with your real JazzCash/Easypaisa numbers.
 
 ## Android app
 
@@ -206,7 +204,7 @@ server/
   wallet.js         wallet ledger, booking fees, reliability points
   policy.js         onboarding checks (phone, identity, driver approval)
   security.js       security headers and rate limiting
-  sms.js            SMS gateway and phone number normalisation
+  phone.js          phone number normalisation
   uploads.js        photo checks and storage
   routes/users.js   register, login, profile, notifications
   routes/onboarding.js phone codes, identity verification, driver registration
@@ -260,7 +258,7 @@ All endpoints are under `/api`. Send `Authorization: Bearer <token>` for the one
 | GET | `/me/ride-requests` 🔒 | Your ride requests |
 | POST | `/ride-requests/:id/close` 🔒 | Close your request |
 | POST | `/reports` 🔒 | Report a user |
-| POST | `/me/phone/send-code` · `/me/phone/verify` 🔒 | Phone verification by SMS code |
+| POST | `/me/email/send-code` · `/me/email/verify` 🔒 | Email verification by code (optionally corrects the email first) |
 | POST | `/me/verification` 🔒 | CNIC number + CNIC front/back + selfie (+ student/employee card), as data URLs |
 | POST | `/me/driver` 🔒 | Driver registration: licence + vehicle details and photos |
 | GET | `/settings` | Current fees, booking mode and requirements |

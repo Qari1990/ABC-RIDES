@@ -103,8 +103,8 @@ async function openUser(name, { withBridge = false } = {}) {
   return u;
 }
 
-// Signs up through the form, then verifies the phone with the one-time code
-// (shown on screen because no SMS gateway is configured in tests).
+// Signs up through the form, then verifies the email with the one-time code
+// (shown on screen because no email service is configured in tests).
 async function register(u, { email, phone, type, gender, org }) {
   await u.go('/register', '#register');
   await u.page.fill('#pn', u.name);
@@ -167,7 +167,7 @@ async function badgeCount(u) {
   return (await dot.count()) ? Number(await dot.textContent()) : 0;
 }
 
-test('1. sign up and verify phone: driver, student, traveller, admin', async () => {
+test('1. sign up and verify email: driver, student, traveller, admin', async () => {
   await register(await openUser('Sana Driver'), { email: 'sana@e2e.pk', phone: '0300 1110001', type: 'professional', gender: 'female', org: 'Engro' });
   await register(await openUser('Ali Student', { withBridge: true }), { email: 'ali@e2e.pk', phone: '0300 1110002', type: 'student', gender: 'male', org: 'FAST Lahore' });
   await register(await openUser('Zara Traveller'), { email: 'zara@e2e.pk', phone: '0300 1110003', type: 'traveler', gender: 'female' });
@@ -175,7 +175,7 @@ test('1. sign up and verify phone: driver, student, traveller, admin', async () 
   const admin = await openUser('Admin');
   await register(admin, { email: 'admin@e2e.pk', phone: '0300 1110005', type: 'professional' });
   await admin.go('/profile', 'text=Admin panel');
-  assert.match(await admin.page.textContent('.card:has(h3:text("Account setup"))'), /Phone number[\s\S]*0300 1110005/);
+  assert.match(await admin.page.textContent('.card:has(h3:text("Account setup"))'), /Email address[\s\S]*admin@e2e.pk/);
 });
 
 test('1b. onboarding: driver wizard, student card, admin approval', async () => {

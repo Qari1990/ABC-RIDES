@@ -14,8 +14,8 @@ function requirePhone(settings, user) {
   if (user.terms_version !== TERMS_VERSION) {
     throw blocked('terms_required', 'Please read and accept the updated Terms of Use first.');
   }
-  if (settings.require_phone_verification && !user.phone_verified) {
-    throw blocked('phone_unverified', 'Please verify your phone number first.');
+  if (settings.require_email_verification && !user.email_verified) {
+    throw blocked('email_unverified', 'Please verify your email address first: we send you a code.');
   }
 }
 

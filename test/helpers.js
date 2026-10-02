@@ -9,7 +9,7 @@ const { setSettings } = require('../server/settings');
 // The original tests predate onboarding checks and fees, so by default the
 // test server switches those off; tests for them turn them back on.
 const RELAXED = {
-  require_phone_verification: false,
+  require_email_verification: false,
   require_driver_approval: false,
   student_price_requires_verification: false,
   driver_commission_pct: 0,
