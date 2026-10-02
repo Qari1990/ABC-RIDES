@@ -49,7 +49,7 @@ async function startServer({ settings = RELAXED } = {}) {
     const { status, body } = await call('POST', '/auth/register', {
       body: {
         name: `User ${n}`, email: `user${n}@test.pk`, phone: '+92 300 0000000', password: 'secret123',
-        traveler_type: 'professional', gender: 'male', ...overrides,
+        traveler_type: 'professional', gender: 'male', accept_terms: true, ...overrides,
       },
     });
     assert.equal(status, 201, JSON.stringify(body));

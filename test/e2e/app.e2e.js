@@ -114,6 +114,7 @@ async function register(u, { email, phone, type, gender, org }) {
   if (org) await u.page.fill('#po', org);
   await u.page.fill('#re', email);
   await u.page.fill('#rp', 'password123');
+  await u.page.check('#register [name=accept_terms]');
   await u.page.click('#register [type=submit]');
   await u.page.waitForSelector('#otp');
   await u.page.waitForFunction(() => /^\d{6}$/.test(document.querySelector('#code').value));
@@ -185,11 +186,12 @@ test('1b. onboarding: driver wizard, student card, admin approval', async () => 
   await sana.page.fill('#cnic', '3520212345671');
   assert.equal(await sana.page.inputValue('#cnic'), '35202-1234567-1', 'CNIC is formatted as you type');
   await sana.page.fill('#lic', 'LHR-998877');
-  await sana.page.fill('#drv [name=make]', 'Honda');
-  await sana.page.fill('#drv [name=model]', 'City');
-  await sana.page.fill('#drv [name=year]', '2021');
-  await sana.page.fill('#drv [name=color]', 'Silver');
-  await sana.page.fill('#drv [name=plate]', 'lea-2468');
+  await sana.page.selectOption('#drv [name=car_make]', 'Honda');
+  await sana.page.selectOption('#drv [name=car_model]', 'City');
+  await sana.page.fill('#drv [name=car_year]', '2021');
+  await sana.page.fill('#drv [name=car_color]', 'Silver');
+  await sana.page.fill('#drv [name=car_plate]', 'lea-2468');
+  await sana.page.check('#drv [name=driver_declaration]');
   await sana.page.click('#drv [type=submit]');
   await sana.page.waitForSelector('.toast.error');
   assert.match(await sana.page.textContent('#toast'), /Please add a photo/);
@@ -355,7 +357,7 @@ test('7. request to book → driver accepts → passenger sees phone and payment
   assert.match(text, /confirmed/);
   assert.match(text, /Pay to: JazzCash 0300 1112233/);
   assert.match(text, /Driver: 0300 1110001/);
-  assert.match(text, /Car: Honda City \(silver\), plate LEA-2468/, 'the vehicle text the driver typed in test 2');
+  assert.match(text, /Car: Honda City 2021 \(Silver\), plate LEA-2468/, 'the registered car and its plate');
   await ali.go('/inbox', '#inbox-list .card');
   assert.match(await ali.page.textContent('#inbox-list'), /Booking confirmed/);
 });

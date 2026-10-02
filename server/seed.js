@@ -9,6 +9,7 @@ const { openDb, transaction } = require('./db');
 const { hashPassword } = require('./auth');
 const { placeKm, minutesFor } = require('./geo');
 const { normalizePhone } = require('./sms');
+const { TERMS_VERSION } = require('./terms');
 
 const users = [
   ['Ahmed Raza', 'ahmed@example.com', '+92 300 1234567', 'professional', 'male', 'Software engineer, Systems Ltd'],
@@ -38,6 +39,7 @@ function seedDemo(db) {
         VALUES (?, ?, ?, ?, ?, ?, ?)`).run(name, email, phone, hash, type, gender, org).lastInsertRowid);
     }
     db.prepare(`UPDATE users SET role = 'admin' WHERE email = 'admin@example.com'`).run();
+  db.prepare(`UPDATE users SET terms_version = ?, terms_accepted_at = ? WHERE email LIKE '%@example.com'`).run(TERMS_VERSION, new Date().toISOString());
     // Demo accounts are already through onboarding: phone verified, ID checked, Rs 1,000 in the wallet.
     let cnic = 3520210000001;
     for (const [, email, phone] of users) {

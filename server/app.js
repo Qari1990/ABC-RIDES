@@ -13,6 +13,8 @@ const walletRouter = require('./routes/wallet');
 const placesRouter = require('./routes/places');
 const { securityHeaders, rateLimiter } = require('./security');
 const { logError } = require('./errorlog');
+const { catalog } = require('./cars');
+const { getSettings } = require('./settings');
 
 // Photo uploads parse their own, larger bodies.
 const LARGE_BODY_PATHS = new Set(['/api/me/verification', '/api/me/driver']);
@@ -39,6 +41,7 @@ function createApp(db, { uploadDir = process.env.UPLOAD_DIR || path.join(__dirna
     res.status(204).end();
   });
   api.get('/cities', (_req, res) => res.json(CITIES));
+  api.get('/cars', (_req, res) => res.json(catalog(getSettings(db))));
   api.get('/route-estimate', (req, res) => res.json(estimateRoute(db, req.query.from, req.query.to)));
   api.use(usersRouter(db));
   api.use(onboardingRouter(db, { uploadDir }));

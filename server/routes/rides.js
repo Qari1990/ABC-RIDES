@@ -9,6 +9,8 @@ const {
   roundFare, stopsOf, hasStops, segmentKm, segmentFare, findSegment, checkSegment, homeCharge,
 } = require('../fares');
 const { getSettings } = require('../settings');
+const { completeRide } = require('../lifecycle');
+const { validateVehicle, fareRange, describeVehicle, shapeVehicle } = require('../cars');
 const { requireBookingIdentity, requireDriver, isVerifiedStudent, instantBooking } = require('../policy');
 const {
   applyTxn, confirmBooking, confirmationFee, shareDiscount, postingFee, adjustReliability, cancelPenalty, insufficient,
@@ -27,6 +29,7 @@ const studentPrice = (ride) => studentFare(ride.price_per_seat, ride);
 
 // Per-seat price for this user between two stops (whole route by default).
 function priceFor(settings, ride, user, segment) {
+  if (ride.private) return ride.price_per_seat; // whole car, no per-seat or student pricing
   const fare = segment ? segmentFare(ride, segment.board, segment.alight) : ride.price_per_seat;
   return isVerifiedStudent(settings, user) ? studentFare(fare, ride) : fare;
 }
@@ -65,9 +68,23 @@ function paymentMethods(value) {
 function shapeRide(db, ride, settings = getSettings(db)) {
   const driver = db.prepare('SELECT * FROM users WHERE id = ?').get(ride.driver_id);
   const { payment_details: _hidden, ...rest } = ride;
-  const vehicle = db.prepare('SELECT make, model, year, color, seats FROM vehicles WHERE user_id = ?').get(ride.driver_id);
+  const registered = db.prepare('SELECT * FROM vehicles WHERE user_id = ?').get(ride.driver_id);
+  // The car for this ride: a temporary one if the driver declared it, else their registered car.
+  const temp = ride.temp_vehicle ? JSON.parse(ride.temp_vehicle) : null;
+  const car = shapeVehicle(temp || registered);
+  if (car) {
+    delete car.plate; // shown only to confirmed passengers
+    car.temporary = !!temp;
+    if (ride.car_class) car.car_class = ride.car_class;
+    car.ac = ride.car_ac === 0 ? 0 : car.ac;
+    if (ride.car_features) car.features = JSON.parse(ride.car_features);
+  }
+  const vehicle = registered ? { make: registered.make, model: registered.model, year: registered.year, color: registered.color, seats: registered.seats } : null;
+  const { temp_vehicle: _t, car_features: _f, ...restClean } = rest;
   return {
-    ...rest,
+    ...restClean,
+    car,
+    private: !!ride.private,
     payment_methods: ride.payment_methods.split(','),
     arrival_at: ride.duration_minutes
       ? new Date(new Date(ride.departure_at).getTime() + ride.duration_minutes * 60000).toISOString()
@@ -107,9 +124,15 @@ module.exports = function ridesRouter(db) {
   // The route of a new ride: stops chosen from popular places (preferred), or
   // just two city names with a price. Either way the fare per km must stay
   // within the admin's limits, so it is fair to passengers and drivers.
-  function resolveRoute(settings, b) {
-    const limits = settings.enforce_fare_limits
-      ? { min: settings.fare_min_per_km, max: settings.fare_max_per_km } : { min: 1, max: 1000 };
+  // range: the per-km fares allowed for this car (see cars.js fareRange).
+  function resolveRoute(settings, b, range) {
+    const limits = settings.enforce_fare_limits ? { min: range.min, max: range.max } : { min: 1, max: 1000 };
+    const perKm = (value) => {
+      if (value === undefined || value === null || value === '') return range.suggested;
+      const n = Math.round(Number(value) * 10) / 10;
+      if (!Number.isFinite(n) || n < limits.min || n > limits.max) throw bad(`Fare per km must be between Rs ${limits.min} and Rs ${limits.max} for this car`);
+      return n;
+    };
     if (Array.isArray(b.stops) && b.stops.length) {
       if (b.stops.length < 2 || b.stops.length > 10) throw bad('A ride needs between 2 and 10 stops');
       if (new Set(b.stops.map(Number)).size !== b.stops.length) throw bad('Each stop can appear only once');
@@ -126,7 +149,7 @@ module.exports = function ridesRouter(db) {
         if (i) km += placeKm(db, places[i - 1], p);
         return { place_id: p.id, city: p.city, name: p.name, lat: p.lat, lon: p.lon, km };
       });
-      const farePerKm = int(b.fare_per_km, `Fare per km`, { min: limits.min, max: limits.max, fallback: settings.fare_per_km });
+      const farePerKm = perKm(b.fare_per_km);
       return { from: first.city, to: last.city, stops, km, farePerKm, pricePerSeat: roundFare(km * farePerKm) };
     }
     const from = str(b.from_city, 'From city', { required: true, max: 60 });
@@ -135,9 +158,9 @@ module.exports = function ridesRouter(db) {
     const pricePerSeat = int(b.price_per_seat, 'Price per seat', { min: 0, max: 100000 });
     const km = cityRoadKm(db, from, to);
     if (km && (pricePerSeat < km * limits.min || pricePerSeat > km * limits.max)) {
-      throw bad(`For about ${km} km, the price per seat must be between Rs ${roundFare(km * limits.min)} and Rs ${roundFare(km * limits.max)} (Rs ${limits.min}–${limits.max} per km)`);
+      throw bad(`For about ${km} km, the price ${b.private ? 'for the car' : 'per seat'} must be between Rs ${roundFare(km * limits.min)} and Rs ${roundFare(km * limits.max)} (Rs ${limits.min}–${limits.max} per km)`);
     }
-    return { from, to, stops: null, km, farePerKm: km ? Math.round(pricePerSeat / km) : null, pricePerSeat };
+    return { from, to, stops: null, km, farePerKm: km ? Math.round((pricePerSeat / km) * 10) / 10 : null, pricePerSeat };
   }
 
   // ---- Search & browse ------------------------------------------------------
@@ -162,6 +185,8 @@ module.exports = function ridesRouter(db) {
     for (const r of candidates) {
       const seg = findSegment(r, q.from, q.to);
       if (!seg) continue;
+      // A private ride is the whole car for the whole route.
+      if (r.private && (seg.board !== 0 || seg.alight !== stopsOf(r).length - 1)) continue;
       out.push({ ...shapeRide(db, r, settings), segment: describeSegment(r, seg), your_price: priceFor(settings, r, req.user, seg) });
       if (out.length === 100) break;
     }
@@ -182,7 +207,8 @@ module.exports = function ridesRouter(db) {
     }
     seg = seg || { board: 0, alight: stopsOf(ride).length - 1 };
     const out = { ...shapeRide(db, ride, settings), segment: describeSegment(ride, seg), your_price: priceFor(settings, ride, me, seg) };
-    const plate = () => db.prepare('SELECT plate FROM vehicles WHERE user_id = ?').get(ride.driver_id)?.plate || null;
+    const plate = () => (ride.temp_vehicle ? JSON.parse(ride.temp_vehicle).plate : null)
+      || db.prepare('SELECT plate FROM vehicles WHERE user_id = ?').get(ride.driver_id)?.plate || null;
     const { passengers } = participants(db, ride);
     out.passengers = passengers.map((p) => ({ id: p.id, name: p.name }));
 
@@ -236,7 +262,19 @@ module.exports = function ridesRouter(db) {
     const settings = getSettings(db);
     requireDriver(settings, req.user);
     const b = req.body || {};
-    const { from, to, stops, km, farePerKm, pricePerSeat } = resolveRoute(settings, b);
+    // The car: the registered one, or a different car declared just for this ride.
+    const registered = db.prepare('SELECT * FROM vehicles WHERE user_id = ?').get(req.user.id);
+    let car = registered ? shapeVehicle(registered) : null;
+    let tempVehicle = null;
+    if (b.temp_vehicle) {
+      if (b.temp_vehicle_declaration !== true) throw bad('Please confirm you may use this car and that it is insured and roadworthy');
+      tempVehicle = validateVehicle(b.temp_vehicle);
+      car = tempVehicle;
+    }
+    const isPrivate = !!b.private;
+    if (isPrivate && Array.isArray(b.stops) && b.stops.length > 2) throw bad('A private ride goes straight from pickup to drop-off, without stops');
+    const range = fareRange(settings, car, { isPrivate });
+    const { from, to, stops, km, farePerKm, pricePerSeat } = resolveRoute(settings, b, range);
     const homePickup = b.home_pickup ? 1 : 0;
     const homeDrop = b.home_drop ? 1 : 0;
     if ((homePickup || homeDrop) && !stops) throw bad('Home pickup/drop needs pickup and drop-off points chosen from the list');
@@ -253,9 +291,10 @@ module.exports = function ridesRouter(db) {
     if (b.women_only && req.user.gender !== 'female') {
       throw bad('Only women drivers can offer women-only rides. Set your gender in your profile.');
     }
-    const vehicle = db.prepare('SELECT * FROM vehicles WHERE user_id = ?').get(req.user.id);
-    const seatsTotal = int(b.seats_total, 'Seats', { min: 1, max: 8 });
-    if (vehicle && seatsTotal > vehicle.seats) throw bad(`Your ${vehicle.make} ${vehicle.model} has ${vehicle.seats} passenger seat(s)`);
+    const carSeats = int(b.seats_total, 'Seats', { min: 1, max: 8 });
+    if (car && carSeats > car.seats) throw bad(`The ${car.make} ${car.model} has ${car.seats} passenger seat(s)`);
+    // A private ride is sold once, as a whole: one "seat" that stands for the car.
+    const seatsTotal = isPrivate ? 1 : carSeats;
     // Posting is free, except for drivers whose reliability is below the threshold.
     const fee = postingFee(settings, req.user);
     if (fee * departures.length > req.user.wallet_balance) {
@@ -268,10 +307,10 @@ module.exports = function ridesRouter(db) {
       stops ? stops[stops.length - 1].name : str(b.dropoff_point, 'Drop-off point', { max: 120 }),
       seatsTotal,
       pricePerSeat,
-      int(b.student_discount_pct, 'Student discount', { min: 0, max: 100, fallback: 0 }),
+      isPrivate ? 0 : int(b.student_discount_pct, 'Student discount', { min: 0, max: 100, fallback: 0 }),
       b.women_only ? 1 : 0,
       b.instant_book ? 1 : 0,
-      str(b.vehicle, 'Vehicle', { max: 80 }) || (vehicle ? `${vehicle.make} ${vehicle.model} (${vehicle.color})` : null),
+      describeVehicle(car) || str(b.vehicle, 'Vehicle', { max: 80 }),
       str(b.notes, 'Notes', { max: 500 }),
       paymentMethods(b.payment_methods),
       str(b.payment_details, 'Payment details', { max: 200 }),
@@ -282,13 +321,15 @@ module.exports = function ridesRouter(db) {
       stops ? JSON.stringify(stops) : null,
       farePerKm,
       homePickup, homeDrop, homeRadius,
+      car ? car.car_class : null, car && car.ac === 0 ? 0 : 1, car ? JSON.stringify(car.features || []) : null,
+      tempVehicle ? JSON.stringify(tempVehicle) : null, isPrivate ? 1 : 0, carSeats,
     ];
     const insert = db.prepare(`
       INSERT INTO rides (driver_id, from_city, to_city, pickup_point, dropoff_point, seats_total,
         price_per_seat, student_discount_pct, women_only, instant_book, vehicle, notes,
         payment_methods, payment_details, duration_minutes, stops, fare_per_km, home_pickup, home_drop, home_radius_km,
-        departure_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+        car_class, car_ac, car_features, temp_vehicle, private, car_seats, departure_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
     const openRequests = db.prepare(`
       SELECT * FROM ride_requests WHERE status = 'open' AND earliest_at <= ? AND latest_at >= ? AND passenger_id != ?`);
     const ids = transaction(db, () => departures.map((d) => {
@@ -361,20 +402,7 @@ module.exports = function ridesRouter(db) {
     if (ride.driver_id !== req.user.id) throw new HttpError(403, 'Only the driver can complete this ride');
     if (ride.status !== 'scheduled') throw bad(`This ride is already ${ride.status}`);
     if (ride.departure_at > new Date().toISOString()) throw bad('You can mark a ride completed only after it departs');
-    transaction(db, () => {
-      db.prepare(`UPDATE rides SET status = 'completed' WHERE id = ?`).run(ride.id);
-      // Requests nobody answered before departure lapse.
-      db.prepare(`UPDATE bookings SET status = 'rejected' WHERE ride_id = ? AND status = 'pending'`).run(ride.id);
-      const { reward_completed: reward, share_bonus_points: bonus } = getSettings(db);
-      const { passengers } = participants(db, ride);
-      // Sharing the car with more passengers earns the driver extra points.
-      const seatsFilled = db.prepare(`SELECT COALESCE(SUM(seats), 0) n FROM bookings WHERE ride_id = ? AND status = 'confirmed'`).get(ride.id).n;
-      if (passengers.length) adjustReliability(db, ride.driver_id, reward + bonus * Math.max(0, seatsFilled - 1));
-      for (const p of passengers) {
-        adjustReliability(db, p.id, reward);
-        notify(db, p.id, 'How was your trip?', `Rate ${req.user.name} for ${route(ride)}`, `/ride/${ride.id}`);
-      }
-    });
+    completeRide(db, ride);
     res.json(shapeRide(db, getRide(ride.id)));
   });
 
@@ -404,6 +432,14 @@ module.exports = function ridesRouter(db) {
         throw bad('This ride is no longer open for booking');
       }
       if (ride.women_only && req.user.gender !== 'female') throw new HttpError(403, 'This ride is for women only');
+      if (ride.private) {
+        if (settings.private_requires_id && req.user.verification_status !== 'verified') {
+          const err = new HttpError(403, 'Private rides are for ID-verified passengers. Verify your CNIC first.');
+          err.code = 'id_required';
+          throw err;
+        }
+        if (seats !== 1) throw bad('A private ride is booked as a whole: book 1 (the car) and say how many people are travelling');
+      }
       const existing = db.prepare(`SELECT 1 FROM bookings WHERE ride_id = ? AND passenger_id = ? AND ${HELD}`)
         .get(ride.id, req.user.id);
       if (existing) throw new HttpError(409, 'You already have a booking on this ride');
@@ -411,10 +447,11 @@ module.exports = function ridesRouter(db) {
 
       // Which part of the route, and optional home pickup/drop near those stops.
       const stops = stopsOf(ride);
-      const seg = {
+      const seg = ride.private ? { board: 0, alight: stops.length - 1 } : {
         board: int(b.board_stop, 'Pickup stop', { min: 0, max: stops.length - 1, fallback: 0 }),
         alight: int(b.alight_stop, 'Drop-off stop', { min: 0, max: stops.length - 1, fallback: stops.length - 1 }),
       };
+      const partySize = ride.private ? int(b.party_size, 'People travelling', { min: 1, max: ride.car_seats || 4, fallback: 1 }) : null;
       checkSegment(ride, seg.board, seg.alight);
       if (b.home_pickup && !ride.home_pickup) throw bad('This driver does not offer home pickup');
       if (b.home_drop && !ride.home_drop) throw bad('This driver does not offer home drop-off');
@@ -429,10 +466,10 @@ module.exports = function ridesRouter(db) {
 
       const { lastInsertRowid } = db.prepare(`
         INSERT INTO bookings (ride_id, passenger_id, seats, price_per_seat, status, message,
-          board_stop, alight_stop, segment_km, home_pickup, home_drop, home_charge)
-        VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?)`).run(
+          board_stop, alight_stop, segment_km, home_pickup, home_drop, home_charge, party_size)
+        VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?)`).run(
         ride.id, req.user.id, seats, price, message, seg.board, seg.alight, segmentKm(ride, seg.board, seg.alight),
-        pickupHome ? JSON.stringify(pickupHome) : null, dropHome ? JSON.stringify(dropHome) : null, homeTotal,
+        pickupHome ? JSON.stringify(pickupHome) : null, dropHome ? JSON.stringify(dropHome) : null, homeTotal, partySize,
       );
       let status = 'pending';
       if (instantBooking(settings, ride)) {
@@ -544,9 +581,16 @@ module.exports = function ridesRouter(db) {
     if (db.prepare('SELECT 1 FROM reviews WHERE ride_id = ? AND reviewer_id = ? AND reviewee_id = ?').get(ride.id, me, revieweeId)) {
       throw new HttpError(409, 'You already reviewed this person for this ride');
     }
-    db.prepare('INSERT INTO reviews (ride_id, reviewer_id, reviewee_id, rating, comment) VALUES (?, ?, ?, ?, ?)')
-      .run(ride.id, me, revieweeId, rating, comment);
-    res.status(201).json({ ok: true });
+    // Reviews move the other person's reliability (Admin → Settings; see "How it works").
+    const points = getSettings(db)[`review_points_${rating}`] || 0;
+    transaction(db, () => {
+      db.prepare('INSERT INTO reviews (ride_id, reviewer_id, reviewee_id, rating, comment) VALUES (?, ?, ?, ?, ?)')
+        .run(ride.id, me, revieweeId, rating, comment);
+      if (points) adjustReliability(db, revieweeId, points);
+      notify(db, revieweeId, `${req.user.name} rated you ${'★'.repeat(rating)}`,
+        `${route(ride)}${comment ? `: “${comment.slice(0, 80)}”` : ''}${points ? ` · reliability ${points > 0 ? '+' : ''}${points}` : ''}`, `/user/${revieweeId}`);
+    });
+    res.status(201).json({ ok: true, reliability_change: points });
   });
 
   return router;

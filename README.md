@@ -5,6 +5,23 @@ Drivers who are already going between cities post their empty seats; passengers 
 
 ## Features
 
+- **Terms & disclaimer at onboarding**: sign-up needs the terms accepted (platform only, drivers responsible for
+  their car and driving, limited liability, emergency numbers); drivers also sign a declaration. When the terms
+  change (`server/terms.js`), everyone accepts the new version before booking or posting.
+- **Car catalog**: drivers pick their car from ~57 common Pakistani models (make, model, body type, engine, seats,
+  class) or "Other"; plus year, colour, plate, AC and features. That car is used for every ride. A one-off ride in
+  another car is declared as a *temporary car*; a permanent change is sent with photos and checked in
+  **Admin → Car changes** (the old car stays in use until approved).
+- **Fares by car**: each class (economy ×0.9, standard ×1, premium ×1.2, SUV ×1.3, van ×0.95; no AC ×0.85, all
+  admin settings) scales the suggested and allowed per-km fare. Everyone can read the rules on **How fares work**
+  (`#/how-it-works`), with reliability points and ride timings.
+- **Private rides**: the whole car for one group, straight from pickup to drop-off, one price for the car
+  (default Rs 18/km standard car, Rs 12–30 allowed); passengers book with the number of people and need a verified
+  ID (setting). Passengers can also request a private car and drivers offer a price for it.
+- **Ride lifecycle**: unbooked rides expire 30 min after departure, unanswered requests lapse, rides with
+  passengers complete by themselves some hours after arrival and everyone is asked to review; ride requests close
+  when their window ends.
+- **Reviews update reliability**: 5★ +1, 4★ 0, 3★ −1, 2★ −3, 1★ −5 points (admin settings), both ways.
 - **Find a ride**: search by from/to city, date (optional), time of day (morning/afternoon/evening), seats needed and women-only.
 - **Maps** (Leaflet + OpenStreetMap, no API key): route maps with stops on every ride, tap-to-choose pickup points
   for ride requests, tap-your-home on the map for home pickup, suggested stops you can add from the map, and

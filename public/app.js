@@ -143,7 +143,19 @@ function onClick(el, handler) {
 // Shows the error and, when a setup step is missing, takes the user to it.
 const SETUP_STEP = {
   phone_unverified: '/verify-phone', id_required: '/verify-id', driver_required: '/driver', insufficient_balance: '/wallet',
+  terms_required: '/accept-terms',
 };
+
+// The key points of the terms and disclaimer, shown before anyone signs up or
+// accepts an updated version (full text: terms.html).
+const TERMS_POINTS = [
+  'ABC Rides only connects drivers and passengers who share the cost of a trip. We are not a transport company, do not employ drivers and are not a party to your trip.',
+  'Drivers alone are responsible for a valid licence, a roadworthy and insured vehicle, and safe, lawful driving. Passengers are responsible for their own conduct and belongings.',
+  'We verify phones and documents, but cannot guarantee anyone’s identity, behaviour or the outcome of a trip. Check the profile, rating and number plate before you travel.',
+  'As far as the law allows, ABC Rides is not liable for accidents, injury, loss, theft, delays or disputes between users. Fares are paid directly between users; app fees are refunded only as the terms say.',
+  'In an emergency call 15 or 1122 and use SOS in the app. Report unsafe behaviour: accounts can be suspended.',
+];
+const termsPoints = () => `<ul class="terms-points">${TERMS_POINTS.map((t) => `<li>${esc(t)}</li>`).join('')}</ul>`;
 function handleError(err) {
   // Our own messages ("Choose a drop-off stop...") are not bugs; crashes and server errors are.
   if (err instanceof TypeError || err instanceof ReferenceError || err instanceof RangeError || err.status >= 500) {
@@ -239,6 +251,9 @@ function timeAtStop(r, idx) {
   return new Date(new Date(r.departure_at).getTime() + (r.duration_minutes * 60000 * r.stops[idx].km) / last.km).toISOString();
 }
 
+// "expired" reads better than "cancelled" for a ride nobody booked.
+const rideStatus = (r) => (r.ended_reason === 'expired' ? 'expired' : r.status);
+
 function rideCard(r) {
   const seg = r.segment || { board: 0, alight: (r.stops || []).length - 1, from: r.pickup_point || r.from_city, to: r.dropoff_point || r.to_city };
   const stopCity = (i, fallback) => (r.stops && r.stops[i] ? r.stops[i].city : fallback);
@@ -246,6 +261,8 @@ function rideCard(r) {
   const endAt = r.stops ? timeAtStop(r, seg.alight) : r.arrival_at;
   const tags = [
     r.near && `<span class="badge brand">📍 ${r.near.km < 1 ? 'At' : `${r.near.km} km from`} ${esc(r.near.name)}</span>`,
+    r.private && `<span class="badge brand">🔒 Private · up to ${r.car_seats || 4} people</span>`,
+    r.car && `<span class="badge">${icon('car')} ${esc(r.car.class_label || '')}${r.car.ac === 0 ? ' · no AC' : ' · AC'}</span>`,
     r.student_discount_pct > 0 && `<span class="badge student">🎓 ${r.student_discount_pct}% student discount</span>`,
     r.women_only && '<span class="badge women">♀ Women only</span>',
     r.instant_book && '<span class="badge brand">⚡ Instant booking</span>',
@@ -258,7 +275,7 @@ function rideCard(r) {
       <div class="meta" style="margin:0 0 10px"><span>${icon('calendar')} ${new Date(r.departure_at).toLocaleDateString('en-PK', { weekday: 'short', day: 'numeric', month: 'short' })}</span>
         ${r.duration_minutes ? `<span>${icon('clock')} ${duration(r.duration_minutes)}</span>` : ''}${seg.km ? `<span>${icon('route')} ${seg.km} km</span>` : ''}
         ${r.stops && (seg.board > 0 || seg.alight < r.stops.length - 1) ? `<span>${icon('car')} part of ${esc(r.from_city)} → ${esc(r.to_city)} ride</span>` : ''}</div>
-      <div class="price">${money(r.your_price ?? r.price_per_seat)}<small>per seat${seg.km ? ` · Rs ${((r.your_price ?? r.price_per_seat) / seg.km).toFixed(1)}/km` : ''}</small></div>
+      <div class="price">${money(r.your_price ?? r.price_per_seat)}<small>${r.private ? 'for the car' : 'per seat'}${seg.km ? ` · Rs ${((r.your_price ?? r.price_per_seat) / seg.km).toFixed(1)}/km` : ''}</small></div>
     </div>
     <div class="trip">
       <span class="t">${clock(startAt)}</span><span class="rail"><i></i><b></b></span>
@@ -270,7 +287,7 @@ function rideCard(r) {
     <div class="ride-foot">
       <span class="who"><span class="mini-avatar">${esc(initials(r.driver.name))}</span><span>${esc(r.driver.name)}${r.driver.verified ? ' ✔' : ''}</span>
         ${r.driver.rating_avg ? `<span class="stars">★</span>${r.driver.rating_avg}` : ''}</span>
-      <span class="seats-left">${icon('armchair')} ${r.seats_left} left</span>
+      <span class="seats-left">${icon('armchair')} ${r.private ? 'whole car' : `${r.seats_left} left`}</span>
     </div>
   </a>`;
 }
@@ -297,9 +314,9 @@ function requestCard(r, { mine = false } = {}) {
     <div class="ride-top">
       <div>
         <div class="route">${esc(r.from_city)} <span class="arrow">→</span> ${esc(r.to_city)}</div>
-        <div class="meta"><span>📅 ${when(r.earliest_at)} – ${new Date(r.latest_at).toLocaleTimeString('en-PK', { hour: 'numeric', minute: '2-digit' })}</span><span>💺 ${r.seats}</span></div>
+        <div class="meta"><span>📅 ${when(r.earliest_at)} – ${new Date(r.latest_at).toLocaleTimeString('en-PK', { hour: 'numeric', minute: '2-digit' })}</span><span>${r.private ? `🔒 Private car · ${r.seats} people` : `💺 ${r.seats}`}</span></div>
       </div>
-      ${r.max_price ? `<div class="price">≤ ${money(r.max_price)}<small>per seat</small></div>` : ''}
+      ${r.max_price ? `<div class="price">≤ ${money(r.max_price)}<small>${r.private ? 'for the car' : 'per seat'}</small></div>` : ''}
     </div>
     <div class="request-points">${point(r.from_place, 'Pickup')}${point(r.to_place, 'Drop-off')}${homeLine(r.home_pickup, 'Home pickup')}${homeLine(r.home_drop, 'Home drop-off')}</div>
     ${fareLine(r)}
@@ -320,8 +337,9 @@ function fareLine(r) {
   const f = r.fare;
   if (!f) return '';
   const parts = [`🛣️ About ${f.km} km`];
-  if (r.max_price) parts.push(`offers ${money(r.max_price)}/seat = <b>Rs ${f.offered_per_km}/km</b>`);
-  parts.push(`fair price ≈ ${money(f.suggested_price)} (Rs ${settings.fare_per_km}/km)`);
+  const unit = r.private ? ' for the car' : '/seat';
+  if (r.max_price) parts.push(`offers ${money(r.max_price)}${unit} = <b>Rs ${f.offered_per_km}/km</b>`);
+  parts.push(`fair price ≈ ${money(f.suggested_price)}${unit} (Rs ${f.per_km || settings.fare_per_km}/km, standard AC car; <a href="#/how-it-works">by car</a>)`);
   return `<div class="small fare-line">${parts.join(' · ')}</div>`;
 }
 
@@ -330,7 +348,7 @@ function driverActions(r, offerParams) {
   if (me && me.id === r.passenger.id) return '';
   const o = r.my_offer;
   if (o) {
-    return `<div class="offer mine-offer"><div class="small"><b>Your offer:</b> ${money(o.price_per_seat)}/seat${o.per_km ? ` (Rs ${o.per_km}/km)` : ''} · ${when(o.departure_at)}
+    return `<div class="offer mine-offer"><div class="small"><b>Your offer:</b> ${money(o.price_per_seat)}${r.private ? ' for the car' : '/seat'}${o.per_km ? ` (Rs ${o.per_km}/km)` : ''} · ${when(o.departure_at)}
       <span class="badge ${o.status === 'pending' ? 'pending' : o.status === 'accepted' ? 'confirmed' : 'cancelled'}">${o.status}</span></div>
       <div class="actions">${o.status === 'accepted' && o.ride_id ? `<a class="btn small" href="#/ride/${o.ride_id}">Open the ride</a>` : ''}
       ${o.status === 'pending' ? `<a class="btn small ghost" href="#/request-offer/${r.id}">Change</a><button class="btn small ghost" data-action="withdraw-offer" data-id="${o.id}">Withdraw</button>` : ''}</div></div>`;
@@ -351,7 +369,7 @@ function offersList(r) {
         <div><a href="#/user/${o.driver.id}"><b>${esc(o.driver.name)}</b></a>${o.driver.verified ? ' ✔' : ''}
           ${o.driver.rating_avg ? ` · <span class="stars">★</span>${o.driver.rating_avg}` : ''} · ${o.driver.reliability ?? ''}${o.driver.reliability != null ? '% reliable' : ''}
           <div class="muted small">${o.vehicle ? `🚗 ${esc(o.vehicle)} · ` : ''}🕒 ${when(o.departure_at)}</div></div>
-        <div class="price">${money(o.price_per_seat)}<small>per seat${o.per_km ? ` · Rs ${o.per_km}/km` : ''}</small></div>
+        <div class="price">${money(o.price_per_seat)}<small>${r.private ? 'for the car' : 'per seat'}${o.per_km ? ` · Rs ${o.per_km}/km` : ''}</small></div>
       </div>
       <div class="small muted">${[o.from_place && `📍 ${esc(o.from_place.name)} → ${esc(o.to_place ? o.to_place.name : r.to_city)}`,
     o.home_pickup && '🏠 home pickup', o.home_drop && '🏠 home drop', o.seats_total > r.seats && o.share_remaining && `shares ${o.seats_total - r.seats} other seat(s)`].filter(Boolean).join(' · ')}</div>
@@ -514,7 +532,7 @@ views.home = async (page) => {
     </div>
     <div class="section-head"><h2>Upcoming rides</h2><a class="small" href="#/requests">Ride requests</a></div>
     <div id="upcoming">${skeletons(3)}</div>
-    ${nativeApp ? '' : `<p class="small muted legal-links"><a href="download.html">${icon('phone')} Get the Android app</a> · <a href="privacy.html">Privacy</a> · <a href="terms.html">Terms</a></p>`}`;
+    ${nativeApp ? '' : `<p class="small muted legal-links"><a href="download.html">${icon('phone')} Get the Android app</a> · <a href="#/how-it-works">How fares work</a> · <a href="privacy.html">Privacy</a> · <a href="terms.html">Terms</a></p>`}`;
   bindSearch(page);
   const fill = async () => {
     const rides = await api('/rides');
@@ -595,7 +613,8 @@ function sosPanel(r) {
 
 views.ride = async (page, q, id) => {
   const qs = new URLSearchParams(Object.entries({ board: q.board, alight: q.alight, from: q.from, to: q.to }).filter(([, v]) => v != null));
-  const [r] = await Promise.all([api(`/rides/${id}?${qs}`), refreshMe()]);
+  const [r] = await Promise.all([api(`/rides/${id}?${qs}`), refreshMe(), loadCars()]);
+  const unit = r.private ? 'for the car' : 'per seat';
   const stopsKnown = r.stops.every((st) => st.km != null);
   const lastStop = r.stops.length - 1;
   const stopName = (i) => {
@@ -614,7 +633,7 @@ views.ride = async (page, q, id) => {
       <div class="list-row">
         <div>
           <b><a href="#/user/${x.passenger_id}">${esc(x.passenger_name)}</a></b>
-          <span class="muted small">· ${esc(TYPE_LABEL[x.passenger_type])} · ${x.passenger_reliability}% reliable · ${x.seats} seat(s) · ${money(x.price_per_seat * x.seats + x.home_charge)}</span>
+          <span class="muted small">· ${esc(TYPE_LABEL[x.passenger_type])} · ${x.passenger_reliability}% reliable · ${r.private ? `whole car, ${x.party_size || 1} people` : `${x.seats} seat(s)`} · ${money(x.price_per_seat * x.seats + x.home_charge)}</span>
           <div class="small">📍 ${stopName(x.board_stop)} → ${stopName(x.alight_stop ?? lastStop)}${x.segment_km ? ` · ${x.segment_km} km` : ''}</div>
           ${x.home_pickup ? `<div class="small">🏠 Pick up from: ${esc(x.home_pickup.address)} (${x.home_pickup.km} km) · <a href="${mapLink(x.home_pickup.lat, x.home_pickup.lon)}" target="_blank" rel="noopener">map</a> · +${money(x.home_pickup.charge)}</div>` : ''}
           ${x.home_drop ? `<div class="small">🏠 Drop at: ${esc(x.home_drop.address)} (${x.home_drop.km} km) · <a href="${mapLink(x.home_drop.lat, x.home_drop.lon)}" target="_blank" rel="noopener">map</a> · +${money(x.home_drop.charge)}</div>` : ''}
@@ -665,7 +684,7 @@ views.ride = async (page, q, id) => {
         <p>📍 ${stopName(b.board_stop)} → ${stopName(b.alight_stop ?? lastStop)}${b.segment_km ? ` · ${b.segment_km} km` : ''}</p>
         ${b.home_pickup ? `<p class="small">🏠 Home pickup: ${esc(b.home_pickup.address)} (+${money(b.home_pickup.charge)})</p>` : ''}
         ${b.home_drop ? `<p class="small">🏠 Home drop: ${esc(b.home_drop.address)} (+${money(b.home_drop.charge)})</p>` : ''}
-        <p>${b.seats} seat(s) · <b>${money(b.price_per_seat * b.seats + b.home_charge)}</b> to pay the driver</p>
+        <p>${r.private ? `🔒 Whole car · ${b.party_size || 1} people` : `${b.seats} seat(s)`} · <b>${money(b.price_per_seat * b.seats + b.home_charge)}</b> to pay the driver</p>
         ${!b.home_pickup && r.stops[b.board_stop ?? 0] && r.stops[b.board_stop ?? 0].lat != null ? `<p><a class="btn small ghost" href="${directions(r.stops[b.board_stop ?? 0].lat, r.stops[b.board_stop ?? 0].lon)}" target="_blank" rel="noopener">🧭 Directions to ${stopName(b.board_stop)}</a></p>` : ''}
         ${b.status === 'pending' ? '<p class="muted small">The driver will accept or decline your request soon. You’ll get a notification.</p>' : ''}
         ${r.driver.phone ? `<p>📞 Driver: <a href="tel:${esc(r.driver.phone)}">${esc(r.driver.phone)}</a></p>` : ''}
@@ -680,16 +699,23 @@ views.ride = async (page, q, id) => {
   } else if (r.status === 'scheduled' && !departed && r.seats_left > 0) {
     bookingSection = `
       <form id="book" class="card">
-        <h3>Book seats</h3>
-        ${r.stops.length > 2 ? `
+        <h3>${r.private ? 'Book the whole car' : 'Book seats'}</h3>
+        ${r.private ? `
+        <p class="small muted">🔒 Private ride: only your group travels, straight from ${stopName(0)} to ${stopName(lastStop)}. One price for the whole car.</p>
+        ${settings.private_requires_id && me && me.verification_status !== 'verified' ? '<p class="small">🪪 Private rides need a verified ID. <a href="#/verify-id">Verify your ID</a> first.</p>' : ''}
+        <input type="hidden" name="seats" value="1">
+        <div class="row two">
+          <div class="field"><label for="bparty">People travelling</label><select id="bparty" name="party_size">${Array.from({ length: r.car_seats || 4 }, (_, i) => `<option>${i + 1}</option>`).join('')}</select></div>
+          <div class="field"><label>Price for the whole car</label><input id="seat-price" value="${money(r.your_price)}" disabled></div>
+        </div>` : r.stops.length > 2 ? `
         <div class="row two">
           <div class="field"><label for="bboard">Get on at</label><select id="bboard" name="board_stop">${r.stops.slice(0, -1).map((st, i) => `<option value="${i}" ${i === r.segment.board ? 'selected' : ''}>${esc(st.name)}, ${esc(st.city)}</option>`).join('')}</select></div>
           <div class="field"><label for="balight">Get off at</label><select id="balight" name="alight_stop">${r.stops.map((st, i) => (i ? `<option value="${i}" ${i === r.segment.alight ? 'selected' : ''}>${esc(st.name)}, ${esc(st.city)}</option>` : '')).join('')}</select></div>
         </div>` : ''}
-        <div class="row two">
+        ${r.private ? '' : `<div class="row two">
           <div class="field"><label for="bseats">Seats</label><select id="bseats" name="seats">${Array.from({ length: Math.min(r.seats_left, 4) }, (_, i) => `<option>${i + 1}</option>`).join('')}</select></div>
           <div class="field"><label>Price per seat</label><input id="seat-price" value="${money(r.your_price)}" disabled></div>
-        </div>
+        </div>`}
         ${['pickup', 'drop'].filter((k) => r[`home_${k}`]).map((k) => `
         <div class="home-opt">
           <label class="check"><input type="checkbox" name="want_${k}" value="1"><span>🏠 ${k === 'pickup' ? 'Pick me up from home' : 'Drop me at home'}
@@ -708,7 +734,7 @@ views.ride = async (page, q, id) => {
         <div class="field"><label for="bmsg">Message to driver (optional)</label><textarea id="bmsg" name="message" maxlength="300" placeholder="e.g. I’ll have one small bag. Can you pick me up near Kalma Chowk?"></textarea></div>
         <div class="fee-box" id="fee-box"></div>
         <button class="btn block" type="submit">${r.instant_book ? 'Book now' : 'Request to book'}</button>
-        ${me && me.traveler_type === 'student' && !me.student_verified && settings.student_price_requires_verification && r.student_discount_pct
+        ${r.private ? '' : me && me.traveler_type === 'student' && !me.student_verified && settings.student_price_requires_verification && r.student_discount_pct
     ? `<p class="small" style="margin-top:8px">🎓 Students pay ${money(r.student_price)}. <a href="#/verify-id">Verify your student card</a> to get this price.</p>`
     : me && me.traveler_type !== 'student' && r.student_discount_pct ? `<p class="muted small" style="margin-top:8px">Students pay ${money(r.student_price)} on this ride.</p>` : ''}
       </form>`;
@@ -730,12 +756,14 @@ views.ride = async (page, q, id) => {
       <div class="ride-top">
         <div>
           <div class="route">${esc(r.from_city)} <span class="arrow">→</span> ${esc(r.to_city)}</div>
-          <div class="meta"><span>💺 ${r.seats_left} of ${r.seats_total} seats left</span></div>
+          <div class="meta"><span>${r.private ? `🔒 Private · up to ${r.car_seats || 4} people${r.seats_left ? '' : ' · booked'}` : `💺 ${r.seats_left} of ${r.seats_total} seats left`}</span></div>
         </div>
-        <div class="price">${money(r.your_price)}<small>per seat</small></div>
+        <div class="price">${money(r.your_price)}<small>${unit}</small></div>
       </div>
       <div class="badges">
-        ${r.status !== 'scheduled' ? `<span class="badge ${r.status}">${r.status}</span>` : ''}
+        ${r.private ? '<span class="badge brand">🔒 Private ride</span>' : ''}
+        ${carBadges(r.car)}
+        ${r.status !== 'scheduled' ? `<span class="badge ${r.status}">${rideStatus(r)}</span>` : ''}
         ${r.student_discount_pct ? `<span class="badge student">🎓 Students ${money(r.segment ? r.segment.student_fare : r.student_price)} (${r.student_discount_pct}% off)</span>` : ''}
         ${r.women_only ? '<span class="badge women">♀ Women only</span>' : ''}
         ${r.instant_book ? '<span class="badge">⚡ Instant booking</span>' : '<span class="badge">Driver approves requests</span>'}
@@ -753,18 +781,19 @@ views.ride = async (page, q, id) => {
   }).join('')}</div>
       <div class="map" id="ride-map" role="img" aria-label="Map of the route"></div>
       <p class="small muted map-note">Tap a stop for Google Maps and directions.</p>
-      <p class="small muted">Rs ${r.fare_per_km}/km per seat · bus ≈ Rs ${settings.ref_bus_per_km}/km · private car ≈ Rs ${settings.ref_private_car_per_km}/km for the whole car.</p>
+      <p class="small muted">Rs ${r.fare_per_km}/km ${unit} · <a href="#/how-it-works">how fares work</a> · bus ≈ Rs ${settings.ref_bus_per_km}/km · private car ≈ Rs ${settings.ref_private_car_per_km}/km for the whole car.</p>
       ${r.home_pickup || r.home_drop ? `<p class="small">🏠 Home ${[r.home_pickup && 'pickup', r.home_drop && 'drop-off'].filter(Boolean).join(' & ')} within ${r.home_radius_km} km.</p>` : ''}` : `
       <div class="list-row"><span class="muted">Pickup</span><span>${esc(r.pickup_point || 'Ask the driver')}</span></div>
       <div class="list-row"><span class="muted">Drop-off</span><span>${esc(r.dropoff_point || 'Ask the driver')}</span></div>`}
-      ${r.vehicle ? `<div class="list-row"><span class="muted">Vehicle</span><span>${esc(r.vehicle)}</span></div>` : ''}
+      ${r.vehicle ? `<div class="list-row"><span class="muted">Vehicle</span><span>${esc(r.vehicle)}${r.car ? ` · ${esc(r.car.body_type || '')}${r.car.engine_cc ? `, ${r.car.engine_cc} cc` : ''}` : ''}</span></div>` : ''}
+      ${r.car && r.car.temporary ? '<div class="small muted">🔁 The driver is using a different car for this trip (declared by the driver).</div>' : ''}
       <div class="list-row"><span class="muted">Payment</span><span>${r.payment_methods.map((m) => PAY_LABEL[m]).join(', ')}</span></div>
       ${r.notes ? `<div class="list-row"><span class="muted">Notes</span><span>${esc(r.notes)}</span></div>` : ''}
     </div>
     ${!isDriver && !activeBooking && r.status === 'scheduled' && !departed && r.seats_left > 0 ? `
     <div class="bookbar">
-      <div class="price">${money(r.your_price)}<small>per seat · ${r.seats_left} left</small></div>
-      <button class="btn" data-action="${me ? 'jump-book' : 'login'}">${icon('ticket')} ${me ? (r.instant_book ? 'Book now' : 'Request seat') : 'Log in to book'}</button>
+      <div class="price">${money(r.your_price)}<small>${r.private ? 'for the car' : `per seat · ${r.seats_left} left`}</small></div>
+      <button class="btn" data-action="${me ? 'jump-book' : 'login'}">${icon('ticket')} ${me ? (r.instant_book ? 'Book now' : r.private ? 'Request the car' : 'Request seat') : 'Log in to book'}</button>
     </div>` : ''}
     ${me && onTrip && r.status === 'scheduled' ? `
       <div class="actions" style="margin-bottom:12px">
@@ -820,6 +849,7 @@ views.ride = async (page, q, id) => {
   const studentOk = me && me.traveler_type === 'student' && (!settings.student_price_requires_verification || me.student_verified);
   // Mirrors the server: whole route at the posted price, parts of it by km.
   const seatPrice = (bIdx, aIdx) => {
+    if (r.private) return r.price_per_seat;
     const base = !stopsKnown || (bIdx === 0 && aIdx === lastStop) ? r.price_per_seat : roundFare((r.stops[aIdx].km - r.stops[bIdx].km) * r.fare_per_km);
     return studentOk ? Math.round((base * (100 - r.student_discount_pct)) / 100) : base;
   };
@@ -853,7 +883,7 @@ views.ride = async (page, q, id) => {
     const fee = (f.free ? 0 : Math.ceil((fare * f.pct) / 100)) + f.low_reliability_fee;
     const segKm = stopsKnown ? r.stops[seg.alight].km - r.stops[seg.board].km : null;
     const lines = [`You pay the driver <b>${money(fare + home)}</b> directly${home ? ` (incl. ${money(home)} home pickup/drop)` : ''}.`];
-    if (segKm) lines.push(`${segKm} km · Rs ${(price / segKm).toFixed(1)}/km per seat (bus ≈ Rs ${settings.ref_bus_per_km}/km).`);
+    if (segKm) lines.push(`${segKm} km · Rs ${(price / segKm).toFixed(1)}/km ${unit} (bus ≈ Rs ${settings.ref_bus_per_km}/km).`);
     if (fee) {
       lines.push(`Booking fee <b>${money(fee)}</b>${f.free ? '' : ` (${f.pct}%)`}${f.low_reliability_fee ? `, incl. ${money(f.low_reliability_fee)} low-reliability fee` : ''}, taken from your wallet when the booking is confirmed.`);
       lines.push(`Wallet: ${money(me.wallet_balance)}${me.wallet_balance < fee ? ' · <a href="#/wallet">Top up</a>' : ''}`);
@@ -913,9 +943,9 @@ views.ride = async (page, q, id) => {
         if (h) homes[`home_${kind}`] = { lat: h.lat, lon: h.lon, address: h.address };
       }
       const res = await api(`/rides/${r.id}/bookings`, {
-        method: 'POST', body: { seats: Number(d.seats), message: d.message, board_stop: seg.board, alight_stop: seg.alight, ...homes },
+        method: 'POST', body: { seats: Number(d.seats), party_size: r.private ? Number(d.party_size) : undefined, message: d.message, board_stop: seg.board, alight_stop: seg.alight, ...homes },
       });
-      toast(res.status === 'confirmed' ? 'Booked! Your seat is confirmed.' : 'Request sent to the driver.');
+      toast(res.status === 'confirmed' ? (r.private ? 'Booked! The car is yours for this trip.' : 'Booked! Your seat is confirmed.') : 'Request sent to the driver.');
       render();
     });
   }
@@ -983,7 +1013,7 @@ function currentLocationLink() {
 
 views.offer = async (page, q) => {
   if (!requireLogin()) return;
-  await refreshMe();
+  await Promise.all([refreshMe(), loadCars()]);
   // Drivers need a verified phone and (if the admin requires it) an approved driver registration.
   if (settings.require_phone_verification && !me.phone_verified) {
     page.innerHTML = setupNeeded('Verify your phone first', 'Posting rides needs a verified phone number. It takes a minute.', '/verify-phone?next=/offer', 'Verify phone');
@@ -1031,10 +1061,20 @@ views.offer = async (page, q) => {
 
       <section data-step="2" hidden>
         <div class="card">
-          <h3 class="step-title"><span class="step">2</span> When are you leaving?</h3>
+          <h3 class="step-title"><span class="step">2</span> When, which car, and how many seats?</h3>
+          <div class="field"><label>Ride type</label>
+            <div class="segmented small"><label><input type="radio" name="ride_type" value="shared" checked> Shared seats</label><label><input type="radio" name="ride_type" value="private"> Private (whole car)</label></div>
+            <p class="small muted" id="type-hint"></p></div>
+          <div class="field"><label>Car</label>
+            <div class="segmented small"><label><input type="radio" name="car_choice" value="mine" checked> ${me.vehicle ? esc(carLabel(me.vehicle)) : 'My car'}</label><label><input type="radio" name="car_choice" value="temp"> A different car for this ride</label></div>
+            <div id="temp-car" class="card" style="box-shadow:none" hidden>
+              <p class="small muted">Only for this ride; your registered car doesn’t change. To replace your car for good, use <a href="#/driver">Update or change my car</a>.</p>
+              ${carFields({})}
+              <label class="check"><input type="checkbox" name="temp_vehicle_declaration" value="1"><span>I confirm I may use this car for this ride and that it is roadworthy and insured.</span></label>
+            </div></div>
           <div class="row two">
             <div class="field"><label for="ow">Departure</label><input id="ow" name="departure_at" type="datetime-local" value="${localInputValue(start)}" required></div>
-            <div class="field"><label for="os">Seats for passengers</label><input id="os" name="seats_total" type="number" min="1" max="${me.vehicle ? me.vehicle.seats : 8}" value="${Math.min(3, me.vehicle ? me.vehicle.seats : 3)}" required></div>
+            <div class="field"><label for="os" id="seats-label">Seats for passengers</label><input id="os" name="seats_total" type="number" min="1" max="${me.vehicle ? me.vehicle.seats : 8}" value="${Math.min(3, me.vehicle ? me.vehicle.seats : 3)}" required></div>
           </div>
           ${durationFields(null)}
           <details class="card" style="box-shadow:none;margin:0">
@@ -1049,9 +1089,9 @@ views.offer = async (page, q) => {
       <section data-step="3" hidden>
         <div class="card" id="fare-card">
           <h3 class="step-title"><span class="step">3</span> Set your price</h3>
-          <div class="field"><label for="ofk">Fare per km per seat (Rs)</label>
-            <input id="ofk" name="fare_per_km" type="number" value="${settings.fare_per_km}" ${settings.enforce_fare_limits ? `min="${settings.fare_min_per_km}" max="${settings.fare_max_per_km}"` : 'min="1"'} required>
-            <p class="muted small">Suggested Rs ${settings.fare_per_km}/km${settings.enforce_fare_limits ? `, allowed Rs ${settings.fare_min_per_km}–${settings.fare_max_per_km}/km` : ''}. Passengers who join on the way pay for their kilometres only.</p>
+          <div class="field"><label for="ofk" id="fare-label">Fare per km per seat (Rs)</label>
+            <input id="ofk" name="fare_per_km" type="number" step="0.1" value="${settings.fare_per_km}" required>
+            <p class="muted small" id="fare-hint"></p>
           </div>
           <div id="fare-info"></div>
           <div id="earnings"></div>
@@ -1061,7 +1101,7 @@ views.offer = async (page, q) => {
           <div class="field"><label>How passengers can pay you</label>${paymentCheckboxes()}</div>
           <div class="field"><label for="opd">Payment account <span class="muted">(shown only to confirmed passengers)</span></label>
             <input id="opd" name="payment_details" placeholder="e.g. JazzCash 0300 1234567 (Ahmed Raza)"></div>
-          <div class="field" style="margin:0"><label for="osd">Student discount (%)</label><input id="osd" name="student_discount_pct" type="number" min="0" max="100" value="0"></div>
+          <div class="field" style="margin:0" id="student-field"><label for="osd">Student discount (%)</label><input id="osd" name="student_discount_pct" type="number" min="0" max="100" value="0"></div>
         </div>
       </section>
 
@@ -1103,6 +1143,35 @@ views.offer = async (page, q) => {
   showWaiting().catch(() => {});
   live(page, showWaiting, 30000);
   let plan = null; // { stops: [...], distance_km, duration_minutes } for the chosen points
+  // Ride type and car decide the fare range (see "How fares work").
+  const tempRoot = $('#temp-car', page);
+  bindCarFields(tempRoot);
+  const isPrivate = () => form.ride_type.value === 'private';
+  const usingTemp = () => form.car_choice.value === 'temp';
+  const currentCar = () => (usingTemp() ? readCar(tempRoot, { quiet: true }) : me.vehicle);
+  const applyCar = (resetFare = true) => {
+    tempRoot.hidden = !usingTemp();
+    const car = currentCar();
+    const range = fareRange(car && car.car_class ? car : null, { isPrivate: isPrivate() });
+    if (resetFare) form.fare_per_km.value = String(range.suggested);
+    if (settings.enforce_fare_limits) { form.fare_per_km.min = String(range.min); form.fare_per_km.max = String(range.max); }
+    $('#fare-label', page).textContent = isPrivate() ? 'Fare per km for the whole car (Rs)' : 'Fare per km per seat (Rs)';
+    $('#fare-hint', page).innerHTML = `Suggested Rs ${range.suggested}/km${settings.enforce_fare_limits ? `, allowed Rs ${range.min}–${range.max}/km` : ''}
+      for ${car && car.car_class ? `a ${esc(classInfo(car.car_class).label.toLowerCase())} car${car.ac === 0 ? ' without AC' : ''}` : 'this car'} (×${range.factor}).
+      ${isPrivate() ? 'One group books the whole car.' : 'Passengers who join on the way pay for their kilometres only.'} <a href="#/how-it-works">How fares work</a>`;
+    $('#seats-label', page).textContent = isPrivate() ? 'People the car can take' : 'Seats for passengers';
+    if (car && car.seats) form.seats_total.max = String(car.seats);
+    $('#student-field', page).hidden = isPrivate();
+    $('#type-hint', page).textContent = isPrivate()
+      ? 'The whole car for one group (family, friends, colleagues), straight from pickup to drop-off. Passengers must be ID-verified.'
+      : 'Sell seats one by one; passengers can join and leave at stops on the way.';
+    if (typeof updateFare === 'function' && plan) updateFare();
+  };
+  form.addEventListener('change', (e) => {
+    if (['ride_type', 'car_choice'].includes(e.target.name)) applyCar(true);
+    else if (tempRoot.contains(e.target)) applyCar(true);
+  });
+  applyCar(true);
   let suggested = [];
   let touched = false;
   form.dur_h.addEventListener('input', () => { touched = true; });
@@ -1116,11 +1185,11 @@ views.offer = async (page, q) => {
     select.dataset[legacyKey] = list.length ? '' : '1';
   };
 
-  const chosenStopIds = () => [
+  const chosenStopIds = () => (isPrivate() ? [form.pickup_place.value, form.drop_place.value] : [
     form.pickup_place.value,
     ...checkedValues(form, 'via').sort((a, b) => Number(form.querySelector(`[name=via][value="${a}"]`).dataset.km) - Number(form.querySelector(`[name=via][value="${b}"]`).dataset.km)),
     form.drop_place.value,
-  ];
+  ]);
 
   // Distances for the chosen points; endpointsChanged refreshes the suggested stops.
   const replan = async (endpointsChanged) => {
@@ -1177,8 +1246,16 @@ views.offer = async (page, q) => {
       return;
     }
     const price = roundFare(km * rate);
-    const seats = Math.max(1, Math.min(8, Number(form.seats_total.value) || 1));
+    const seats = isPrivate() ? 1 : Math.max(1, Math.min(8, Number(form.seats_total.value) || 1));
     const fuel = Math.round((km * settings.petrol_price) / settings.car_km_per_litre);
+    if (isPrivate()) {
+      const commission = me.free_confirmations_left ? 0 : Math.ceil((price * settings.driver_commission_pct) / 100);
+      $('#fare-info', page).innerHTML = `<p>Price for the whole car: <b>${money(price)}</b> (${km} km).</p>
+        <p class="small muted">A private car on this distance costs about ${money(roundFare(km * settings.ref_private_car_per_km))} elsewhere.</p>`;
+      $('#earnings', page).innerHTML = `<p class="small"><b>You keep ${money(price - commission)}</b> after ${commission ? `${money(commission)} commission` : 'no commission'};
+        fuel for ${km} km ≈ ${money(fuel)}.</p>`;
+      return;
+    }
     const commissionFor = (k) => {
       const disc = k >= 3 ? settings.share_discount_3_pct : k === 2 ? settings.share_discount_2_pct : 0;
       return Math.ceil((price * settings.driver_commission_pct * (100 - disc)) / 10000);
@@ -1199,7 +1276,7 @@ views.offer = async (page, q) => {
     }
     $('#earnings', page).innerHTML = `
       <p class="small"><b>What you earn</b> (fuel for ${km} km ≈ ${money(fuel)} at ${money(settings.petrol_price)}/litre, ${settings.car_km_per_litre} km/litre):</p>
-      <div class="table-wrap"><table class="earn">
+      <div class="table-wrap"><table class="earn hiw">
         <tr><th>Riders</th><th>You keep</th><th>Commission</th><th>Fuel paid</th></tr>
         ${rows.join('')}
       </table></div>
@@ -1240,6 +1317,8 @@ views.offer = async (page, q) => {
   const sectionOf = (n) => form.querySelector(`[data-step="${n}"]`);
   const checkStep = (n) => {
     for (const el of sectionOf(n).querySelectorAll('input, select, textarea')) {
+      const hiddenBlock = el.closest('[hidden]');
+      if (hiddenBlock && hiddenBlock !== sectionOf(n)) continue; // e.g. the temporary car when using your own
       if (!el.checkValidity()) {
         showStep(n);
         el.reportValidity();
@@ -1307,7 +1386,9 @@ views.offer = async (page, q) => {
         ...route,
         departures: departures.map((x) => x.toISOString()),
         seats_total: Number(d.seats_total),
-        student_discount_pct: Number(d.student_discount_pct || 0), vehicle: d.vehicle, notes: d.notes,
+        private: isPrivate(),
+        ...(usingTemp() ? { temp_vehicle: readCar(tempRoot), temp_vehicle_declaration: !!d.temp_vehicle_declaration } : {}),
+        student_discount_pct: isPrivate() ? 0 : Number(d.student_discount_pct || 0), vehicle: d.vehicle, notes: d.notes,
         payment_methods: checkedValues(form, 'pay'), payment_details: d.payment_details,
         duration_minutes: durationValue(d),
         home_pickup: !!d.home_pickup, home_drop: !!d.home_drop, home_radius_km: Number(d.home_radius_km),
@@ -1346,7 +1427,7 @@ views.requests = async (page, q, sub) => {
 // A driver's offer to take one passenger's request (instead of posting a ride).
 views['request-offer'] = async (page, _q, id) => {
   if (!requireLogin()) return;
-  await refreshMe();
+  await Promise.all([refreshMe(), loadCars()]);
   if (settings.require_driver_approval && me.driver_status !== 'approved') {
     page.innerHTML = setupNeeded('Become a driver', 'To offer rides, drivers register once with their CNIC, driving licence and vehicle.', '/driver', 'Register as a driver');
     return;
@@ -1362,7 +1443,7 @@ views['request-offer'] = async (page, _q, id) => {
     <h1>Offer a ride to ${esc(r.passenger.name.split(' ')[0])}</h1>
     <div class="card">
       <div class="route">${esc(r.from_city)} <span class="arrow">→</span> ${esc(r.to_city)}</div>
-      <div class="meta"><span>📅 ${when(r.earliest_at)} – ${clock(r.latest_at)}</span><span>💺 ${r.seats} seat(s)</span></div>
+      <div class="meta"><span>📅 ${when(r.earliest_at)} – ${clock(r.latest_at)}</span><span>${r.private ? `🔒 Private car for ${r.seats} people` : `💺 ${r.seats} seat(s)`}</span></div>
       <div class="request-points">${r.from_place ? `<div class="small">📍 From <b>${esc(r.from_place.name)}</b></div>` : ''}${r.to_place ? `<div class="small">📍 To <b>${esc(r.to_place.name)}</b></div>` : ''}
         ${r.home_pickup ? `<div class="small">🏠 Wants home pickup: ${esc(r.home_pickup.address || 'location shared')}</div>` : ''}${r.home_drop ? `<div class="small">🏠 Wants home drop-off: ${esc(r.home_drop.address || 'location shared')}</div>` : ''}</div>
       ${fareLine(r)}
@@ -1376,10 +1457,11 @@ views['request-offer'] = async (page, _q, id) => {
       ${r.from_place && r.to_place ? '' : `<div class="row two">
         <div class="field"><label>Pickup in ${esc(r.from_city)}</label>${pointSelect('from_place_id', r.from_city, r.from_place)}</div>
         <div class="field"><label>Drop-off in ${esc(r.to_city)}</label>${pointSelect('to_place_id', r.to_city, r.to_place)}</div></div>`}
-      <div class="field"><label for="rop">Price per seat (Rs)</label>
+      <div class="field"><label for="rop">${r.private ? 'Price for the whole car (Rs)' : 'Price per seat (Rs)'}</label>
         <input id="rop" name="price_per_seat" type="number" min="0" step="10" required value="${o ? o.price_per_seat : (r.max_price || (r.fare ? r.fare.suggested_price : ''))}"></div>
       <div id="ro-fare" class="small muted"></div>
-      <label class="check"><input type="checkbox" name="share_remaining" value="1" ${!o || o.share_remaining ? 'checked' : ''}> Share my other seats with more passengers</label>
+      ${r.private ? '<p class="small muted">🔒 Private trip: only their group travels, so your other seats are not sold.</p>' : ''}
+      <label class="check" ${r.private ? 'hidden' : ''}><input type="checkbox" name="share_remaining" value="1" ${!r.private && (!o || o.share_remaining) ? 'checked' : ''}> Share my other seats with more passengers</label>
       <div class="field" id="ro-seats"><label for="ros">Passenger seats in your car</label><input id="ros" name="seats_total" type="number" min="${r.seats}" max="8" value="${o ? o.seats_total : Math.max(r.seats, 3)}"></div>
       ${r.home_pickup ? `<label class="check"><input type="checkbox" name="home_pickup" value="1" checked> 🏠 I’ll pick them up from home (+ charge, all yours)</label>` : ''}
       ${r.home_drop ? `<label class="check"><input type="checkbox" name="home_drop" value="1" checked> 🏠 I’ll drop them at home (+ charge, all yours)</label>` : ''}
@@ -1398,10 +1480,11 @@ views['request-offer'] = async (page, _q, id) => {
     const price = Number(form.price_per_seat.value) || 0;
     const km = r.fare ? r.fare.km : null;
     const lines = [];
-    if (km) lines.push(`${money(price)} for ${km} km = <b>Rs ${(price / km).toFixed(1)}/km</b> per seat (fair ≈ Rs ${settings.fare_per_km}/km, allowed Rs ${settings.fare_min_per_km}–${settings.fare_max_per_km}/km${r.max_price ? `; ${esc(r.passenger.name.split(' ')[0])} offered ${money(r.max_price)}` : ''})`);
+    const range = fareRange(me.vehicle, { isPrivate: !!r.private });
+    if (km) lines.push(`${money(price)} for ${km} km = <b>Rs ${(price / km).toFixed(1)}/km</b> ${r.private ? 'for the car' : 'per seat'} (your car: fair ≈ Rs ${range.suggested}/km, allowed Rs ${range.min}–${range.max}/km, <a href="#/how-it-works">why</a>${r.max_price ? `; ${esc(r.passenger.name.split(' ')[0])} offered ${money(r.max_price)}` : ''})`);
     $('#ro-fare', page).innerHTML = lines.join('<br>');
     $('#ro-seats', page).hidden = !form.share_remaining.checked;
-    const fare = price * r.seats;
+    const fare = r.private ? price : price * r.seats;
     const homeCharge = ['pickup', 'drop'].reduce((sum, k) => {
       const h = r[`home_${k}`];
       const at = k === 'pickup' ? r.from_place : r.to_place;
@@ -1458,9 +1541,12 @@ views.newRequest = async (page, q) => {
         <div class="field"><label>Leave after</label><input name="from_time" type="time" value="06:00" required></div>
         <div class="field"><label>Leave before</label><input name="to_time" type="time" value="22:00" required></div>
       </div>
+      <div class="field"><label>Trip type</label>
+        <div class="segmented small"><label><input type="radio" name="trip_type" value="shared" checked> Shared (per seat)</label><label><input type="radio" name="trip_type" value="private"> 🔒 Private car (whole car)</label></div>
+        <p class="small muted" id="rq-type-hint">Shared: you pay per seat and the driver may take other passengers. Cheapest.</p></div>
       <div class="row two">
-        <div class="field"><label>Seats</label><select name="seats">${[1, 2, 3, 4].map((n) => `<option ${String(q.seats) === String(n) ? 'selected' : ''}>${n}</option>`).join('')}</select></div>
-        <div class="field"><label>Max price per seat (Rs, optional)</label><input name="max_price" type="number" min="0" step="50"></div>
+        <div class="field"><label id="rq-seats-label">Seats</label><select name="seats">${[1, 2, 3, 4, 5, 6, 7].map((n) => `<option ${String(q.seats) === String(n) ? 'selected' : ''}>${n}</option>`).join('')}</select></div>
+        <div class="field"><label id="rq-price-label">Max price per seat (Rs, optional)</label><input name="max_price" type="number" min="0" step="50"></div>
       </div>
       ${['pickup', 'drop'].map((k) => `
       <div class="home-opt">
@@ -1563,10 +1649,21 @@ views.newRequest = async (page, q) => {
     homeNote('pickup');
   });
 
+  const typeChanged = () => {
+    const priv = d0().trip_type === 'private';
+    $('#rq-seats-label', page).textContent = priv ? 'People travelling' : 'Seats';
+    $('#rq-price-label', page).textContent = priv ? 'Max price for the car (Rs, optional)' : 'Max price per seat (Rs, optional)';
+    $('#rq-type-hint', page).innerHTML = priv
+      ? `Private: the whole car for your group only, straight to your drop-off. About Rs ${settings.private_per_km}/km for the car (standard AC car)${settings.private_requires_id && me.verification_status !== 'verified' ? '. Needs a <a href="#/verify-id">verified ID</a>' : ''}. <a href="#/how-it-works">How fares work</a>`
+      : 'Shared: you pay per seat and the driver may take other passengers. Cheapest.';
+  };
+  const d0 = () => ({ trip_type: (form.querySelector('[name=trip_type]:checked') || {}).value });
+  form.querySelectorAll('[name=trip_type]').forEach((x) => x.addEventListener('change', typeChanged));
   onSubmit(form, async (d) => {
     const posted = await api('/ride-requests', {
       method: 'POST',
       body: {
+        private: d.trip_type === 'private',
         from_city: d.from_city, to_city: d.to_city, seats: Number(d.seats), notes: d.notes,
         from_place_id: d.from_place_id ? Number(d.from_place_id) : null,
         to_place_id: d.to_place_id ? Number(d.to_place_id) : null,
@@ -1623,7 +1720,7 @@ views.trips = async (page, q) => {
           <div class="price">${money(r.price_per_seat)}<small>per seat</small></div>
         </div>
         <div class="badges">
-          <span class="badge ${r.status}">${r.status}</span>
+          <span class="badge ${r.status}">${rideStatus(r)}</span>
           ${r.pending_requests ? `<span class="badge pending">${r.pending_requests} new request(s)</span>` : ''}
         </div>
       </a>`).join('') || '<div class="card empty">You haven’t offered any rides. <a href="#/offer">Offer one</a></div>');
@@ -1820,6 +1917,31 @@ views.forgot = async (page) => {
   });
 };
 
+views['accept-terms'] = async (page, q) => {
+  if (!requireLogin()) return;
+  page.innerHTML = `
+    <h1>Our terms have been updated</h1>
+    <div class="card">
+      <p>Please read the key points and accept them to keep using ABC Rides.</p>
+      ${termsPoints()}
+      <p class="small">Full text: <a href="terms.html">Terms of Use & disclaimer</a> · <a href="privacy.html">Privacy Policy</a></p>
+      <label class="check"><input type="checkbox" id="acc-terms"><span>I have read and accept the Terms of Use, disclaimer and Privacy Policy.</span></label>
+      <div class="actions"><button class="btn" data-action="accept">Accept and continue</button><button class="btn ghost" data-action="logout">Log out</button></div>
+    </div>`;
+  onClick(page, async (action) => {
+    if (action === 'logout') {
+      await api('/auth/logout', { method: 'POST' }).catch(() => {});
+      store.token = null; me = null;
+      location.hash = '#/';
+      return;
+    }
+    if (!$('#acc-terms', page).checked) throw new Error('Tick the box to accept the terms');
+    me = await api('/me/accept-terms', { method: 'POST', body: { version: settings.terms_version } });
+    toast('Thank you!');
+    location.hash = `#${q.next || '/'}`;
+  });
+};
+
 views.register = async (page, q) => {
   if (me) { location.hash = '#/'; return; }
   page.innerHTML = `
@@ -1828,12 +1950,14 @@ views.register = async (page, q) => {
       ${profileFields()}
       <div class="field"><label for="re">Email</label><input id="re" name="email" type="email" autocomplete="email" required></div>
       <div class="field"><label for="rp">Password</label><input id="rp" name="password" type="password" minlength="8" autocomplete="new-password" required></div>
+      <details class="terms-box"><summary><b>Terms & disclaimer: key points</b></summary>${termsPoints()}
+        <p class="small">Full text: <a href="terms.html">Terms of Use</a> · <a href="privacy.html">Privacy Policy</a></p></details>
+      <label class="check"><input type="checkbox" name="accept_terms" value="1" required><span>I have read and accept the <a href="terms.html">Terms of Use & disclaimer</a> and the <a href="privacy.html">Privacy Policy</a>.</span></label>
       <button class="btn block" type="submit">Sign up</button>
-      <p class="small muted" style="margin-top:10px;text-align:center">By signing up you agree to the <a href="terms.html">Terms</a> and <a href="privacy.html">Privacy policy</a>.</p>
     </form>
     <p class="muted">Already have an account? <a href="#/login">Log in</a></p>`;
   onSubmit($('#register', page), async (d) => {
-    const res = await api('/auth/register', { method: 'POST', body: d });
+    const res = await api('/auth/register', { method: 'POST', body: { ...d, accept_terms: !!d.accept_terms } });
     store.token = res.token; me = res.user;
     toast(`Welcome, ${me.name.split(' ')[0]}! Let’s verify your phone.`);
     location.hash = `#/verify-phone?next=${encodeURIComponent(q.next || '/')}`;
@@ -1969,18 +2093,162 @@ views['verify-id'] = async (page, q) => {
   });
 };
 
+// ---- Cars --------------------------------------------------------------------
+let carCatalog = null;
+const loadCars = async () => (carCatalog = carCatalog || await api('/cars'));
+const classInfo = (id) => (carCatalog && carCatalog.classes.find((c) => c.id === id)) || { label: id, factor: 1 };
+const carLabel = (v) => (v ? `${v.make} ${v.model}${v.year ? ` ${v.year}` : ''}${v.color ? ` (${v.color})` : ''}` : '');
+
+/**
+ * Per-km fares for a car, mirroring the server: the admin's base fares times
+ * the class factor, times the no-AC factor when the car has no AC.
+ */
+function fareRange(car, { isPrivate = false } = {}) {
+  const cls = car ? classInfo(car.car_class).factor : 1;
+  const f = Math.round(cls * (car && car.ac === 0 ? carCatalog.no_ac_factor : 1) * 10000) / 10000;
+  const r = (n) => Math.round(n * f * 10) / 10;
+  return isPrivate
+    ? { factor: f, suggested: r(settings.private_per_km), min: r(settings.private_min_per_km), max: r(settings.private_max_per_km) }
+    : { factor: f, suggested: r(settings.fare_per_km), min: r(settings.fare_min_per_km), max: r(settings.fare_max_per_km) };
+}
+
+/** Car form fields (catalog make/model, or "Other" with body type and engine). */
+function carFields(v = {}, { photos = false } = {}) {
+  const year = new Date().getFullYear();
+  const makes = [...new Set(carCatalog.cars.map((c) => c.make))];
+  const features = Object.entries(carCatalog.features);
+  return `
+    <div class="car-fields">
+      <div class="row two">
+        <div class="field"><label>Make</label><select name="car_make" required><option value="">Choose…</option>
+          ${makes.map((m) => `<option ${m === v.make ? 'selected' : ''}>${esc(m)}</option>`).join('')}<option value="__other">Other</option></select></div>
+        <div class="field"><label>Model</label><select name="car_model" required><option value="">Choose the make first</option></select></div>
+      </div>
+      <div class="row two car-other" hidden>
+        <div class="field"><label>Make (type it)</label><input name="other_make" maxlength="30" value="${esc(v.make || '')}"></div>
+        <div class="field"><label>Model (type it)</label><input name="other_model" maxlength="40" value="${esc(v.model || '')}"></div>
+        <div class="field"><label>Body type</label><select name="body_type">${carCatalog.body_types.map((b) => `<option ${b === v.body_type ? 'selected' : ''}>${b}</option>`).join('')}</select></div>
+        <div class="field"><label>Engine (cc)</label><input name="engine_cc" type="number" min="600" max="6000" step="50" value="${v.engine_cc || 1300}"></div>
+      </div>
+      <div class="row three">
+        <div class="field"><label>Year</label><input name="car_year" type="number" min="1980" max="${year + 1}" placeholder="2019" value="${v.year || ''}" required></div>
+        <div class="field"><label>Colour</label><input name="car_color" placeholder="White" value="${esc(v.color || '')}" required></div>
+        <div class="field"><label>Passenger seats</label><input name="car_seats" type="number" min="1" max="8" value="${v.seats || 4}" required></div>
+      </div>
+      <div class="field"><label>Number plate</label><input name="car_plate" placeholder="LEA-1234" autocapitalize="characters" value="${esc(v.plate || '')}" required></div>
+      <div class="field"><label>Air conditioning</label>
+        <div class="segmented small"><label><input type="radio" name="car_ac" value="1" ${v.ac === 0 ? '' : 'checked'}> AC working</label><label><input type="radio" name="car_ac" value="0" ${v.ac === 0 ? 'checked' : ''}> No AC</label></div></div>
+      <div class="field"><label>Features</label><div class="days">${features.map(([k, label]) => `<label><input type="checkbox" name="car_feature" value="${k}" ${(v.features || []).includes(k) ? 'checked' : ''}><span>${esc(label)}</span></label>`).join('')}</div></div>
+      <div class="hint car-class">${icon('car')}<span></span></div>
+      ${photos ? `<div class="row two">${photoField('vehicle_photo', 'Car photo (plate visible)', { capture: 'environment' })}${photoField('registration_photo', 'Registration (vehicle book)', { capture: 'environment' })}</div>` : ''}
+    </div>`;
+}
+
+/** Makes the car fields work: models for the make, seat limits, the class and fare factor. */
+function bindCarFields(root, v = {}) {
+  const f = (n) => root.querySelector(`[name=${n}]`);
+  const fillModels = () => {
+    const make = f('car_make').value;
+    const models = carCatalog.cars.filter((c) => c.make === make);
+    f('car_model').innerHTML = make === '__other'
+      ? '<option value="__other">Other</option>'
+      : `<option value="">Choose…</option>${models.map((c) => `<option ${c.model === v.model ? 'selected' : ''}>${esc(c.model)}</option>`).join('')}<option value="__other">Other</option>`;
+  };
+  const current = () => carCatalog.cars.find((c) => c.make === f('car_make').value && c.model === f('car_model').value);
+  const update = () => {
+    const other = f('car_make').value === '__other' || f('car_model').value === '__other';
+    root.querySelector('.car-other').hidden = !other;
+    for (const n of ['other_make', 'other_model', 'engine_cc']) f(n).required = other;
+    if (f('car_make').value !== '__other') f('other_make').value = other ? f('other_make').value || '' : f('car_make').value;
+    const known = current();
+    if (known) f('car_seats').max = String(known.seats);
+    const car = readCar(root, { quiet: true });
+    const cls = classInfo(car.car_class);
+    const range = fareRange(car);
+    root.querySelector('.car-class span').innerHTML = car.car_class
+      ? `Class: <b>${esc(cls.label)}</b>${car.ac === 0 ? ', no AC' : ', AC'} → fares ×${range.factor} (suggested Rs ${range.suggested}/km per seat, allowed Rs ${range.min}–${range.max}). <a href="#/how-it-works">How fares work</a>`
+      : 'Choose your car to see its class and fares.';
+  };
+  fillModels();
+  f('car_make').addEventListener('change', () => { fillModels(); update(); });
+  root.addEventListener('change', update);
+  root.addEventListener('input', update);
+  update();
+}
+
+/** The car as the API expects it. */
+function readCar(root, { quiet = false } = {}) {
+  const f = (n) => root.querySelector(`[name=${n}]`);
+  const other = f('car_make').value === '__other' || f('car_model').value === '__other';
+  const known = carCatalog.cars.find((c) => c.make === f('car_make').value && c.model === f('car_model').value);
+  const make = other ? (f('car_make').value === '__other' ? f('other_make').value.trim() : f('car_make').value) : f('car_make').value;
+  const model = other ? f('other_model').value.trim() : f('car_model').value;
+  if (!quiet && (!make || !model)) throw new Error('Choose your car’s make and model');
+  const body = known ? known.body_type : f('body_type').value;
+  const cc = known ? known.engine_cc : Number(f('engine_cc').value);
+  const carClass = known ? known.car_class
+    : body === 'suv' || body === 'pickup' ? 'suv' : body === 'van' || body === 'mpv' ? 'van' : body === 'hatchback' && cc <= 1000 ? 'economy' : cc > 1600 ? 'premium' : 'standard';
+  return {
+    make, model, year: Number(f('car_year').value), color: f('car_color').value.trim(), plate: f('car_plate').value.trim(),
+    seats: Number(f('car_seats').value), body_type: body, engine_cc: cc, car_class: (make && model) || known ? carClass : null,
+    ac: f('car_ac') && root.querySelector('[name=car_ac]:checked') ? Number(root.querySelector('[name=car_ac]:checked').value) : 1,
+    features: [...root.querySelectorAll('[name=car_feature]:checked')].map((x) => x.value),
+  };
+}
+
+/** A short description of a car for passengers. */
+function carBadges(car) {
+  if (!car) return '';
+  const feats = (car.features || []).map((k) => (carCatalog && carCatalog.features[k]) || k);
+  return `<span class="badge">${icon('car')} ${esc(car.class_label || classInfo(car.car_class).label)}</span>`
+    + `<span class="badge">${car.ac === 0 ? 'No AC' : '❄ AC'}</span>${feats.map((x) => `<span class="badge">${esc(x)}</span>`).join('')}`;
+}
+
 views.driver = async (page) => {
   if (!requireLogin()) return;
-  await refreshMe();
+  await Promise.all([refreshMe(), loadCars()]);
   if (me.driver_status === 'approved' || me.driver_status === 'pending') {
     const v = me.vehicle;
+    const ch = me.vehicle_change;
     page.innerHTML = `
       <h1>${me.driver_status === 'approved' ? 'You’re an approved driver ✅' : 'Driver registration under review ⏳'}</h1>
-      ${v ? `<div class="card"><h3>🚗 ${esc(v.make)} ${esc(v.model)} (${v.year})</h3>
-        <div class="list-row"><span class="muted">Colour</span><span>${esc(v.color)}</span></div>
+      ${v ? `<div class="card"><h3>🚗 ${esc(carLabel(v))}</h3>
+        <div class="badges">${carBadges(v)}</div>
         <div class="list-row"><span class="muted">Plate</span><b class="plate">${esc(v.plate)}</b></div>
-        <div class="list-row"><span class="muted">Passenger seats</span><span>${v.seats}</span></div></div>` : ''}
-      ${me.driver_status === 'approved' ? '<a class="btn block" href="#/offer">➕ Offer a ride</a>' : '<p class="muted">You’ll get a notification once our team has checked your documents.</p>'}`;
+        <div class="list-row"><span class="muted">Body · engine</span><span>${esc(v.body_type || '')}${v.engine_cc ? ` · ${v.engine_cc} cc` : ''}</span></div>
+        <div class="list-row"><span class="muted">Passenger seats</span><span>${v.seats}</span></div>
+        <p class="small muted">This car is used for all your rides. For one trip in another car, choose “a different car for this ride” when you offer it.</p></div>` : ''}
+      ${ch ? `<div class="card warn small">⏳ <b>Car change under review:</b> ${esc(carLabel(ch))}, plate ${esc(ch.plate)}. Your current car stays in use until it’s approved.
+        <div class="actions"><button class="btn small ghost" data-action="cancel-change">Cancel the change</button></div></div>` : ''}
+      ${me.vehicle_change_note ? `<div class="card warn small">Your last car change was not approved: ${esc(me.vehicle_change_note)}</div>` : ''}
+      ${me.driver_status === 'approved' ? `<a class="btn block" href="#/offer">➕ Offer a ride</a>
+      ${v && !ch ? `<details class="card" style="margin-top:12px"><summary><b>Update or change my car</b></summary>
+        <form id="car-change" style="margin-top:12px">
+          <p class="small muted">Same car (colour, seats, AC, features): saved at once. A different car: send its photos; our team checks it like your first car, and your current car stays in use until then.</p>
+          ${carFields(v, { photos: true })}
+          <div class="field"><label>Why are you changing the car? (only for a different car)</label><input name="reason" maxlength="200" placeholder="e.g. Sold my old car"></div>
+          <label class="check"><input type="checkbox" name="driver_declaration" value="1"><span>For a different car: I confirm it is roadworthy, insured and I am allowed to use it.</span></label>
+          <button class="btn" type="submit">Save</button>
+        </form></details>` : ''}` : '<p class="muted">You’ll get a notification once our team has checked your documents.</p>'}`;
+    const form = $('#car-change', page);
+    if (form) {
+      bindCarFields(form, v);
+      const photos = bindPhotos(form);
+      onSubmit(form, async (d) => {
+        const car = readCar(form);
+        me = await api('/me/vehicle', {
+          method: 'POST',
+          body: { vehicle: car, reason: d.reason, driver_declaration: !!d.driver_declaration, vehicle_photo: photos.vehicle_photo, registration_photo: photos.registration_photo },
+        });
+        toast(me.vehicle_change ? 'Sent for review. Your current car stays in use until it’s approved.' : 'Car details saved');
+        render();
+      });
+    }
+    onClick(page, async (action) => {
+      if (action !== 'cancel-change') return;
+      me = await api('/me/vehicle/change', { method: 'DELETE' });
+      render();
+    });
     return;
   }
   const needId = !['verified', 'pending'].includes(me.verification_status);
@@ -2008,26 +2276,18 @@ views.driver = async (page) => {
       </div>
       <div class="card">
         <h3><span class="step">${needId ? 3 : 2}</span> Vehicle</h3>
-        <div class="row two">
-          <div class="field"><label>Make</label><input name="make" placeholder="Toyota" required></div>
-          <div class="field"><label>Model</label><input name="model" placeholder="Corolla" required></div>
-        </div>
-        <div class="row three">
-          <div class="field"><label>Year</label><input name="year" type="number" min="1980" max="${year + 1}" placeholder="2019" required></div>
-          <div class="field"><label>Colour</label><input name="color" placeholder="White" required></div>
-          <div class="field"><label>Passenger seats</label><input name="seats" type="number" min="1" max="8" value="4" required></div>
-        </div>
-        <div class="field"><label>Number plate</label><input name="plate" placeholder="LEA-1234" autocapitalize="characters" required></div>
-        <div class="row two">
-          ${photoField('vehicle_photo', 'Car photo (plate visible)', { capture: 'environment' })}
-          ${photoField('registration_photo', 'Registration (vehicle book)', { capture: 'environment' })}
-        </div>
+        ${carFields({}, { photos: true })}
+      </div>
+      <div class="card terms-box">
+        <b>Driver declaration</b>
+        <label class="check"><input type="checkbox" name="driver_declaration" value="1" required><span>I confirm that my driving licence is valid; my car is roadworthy, insured and I am allowed to use it; I will follow traffic laws and never carry more passengers than seat belts; and I alone am responsible for my driving and my car. I accept the <a href="terms.html">Terms of Use & disclaimer</a>.</span></label>
       </div>
       <button class="btn block" type="submit">Submit for review</button>
       <p class="muted small" style="margin-top:8px">🔒 Your documents are only seen by the ABC Rides team. Passengers see your car and, once confirmed, its plate.</p>
     </form>`}`;
   const form = $('#drv', page);
   if (!form) return;
+  bindCarFields(form);
   if (form.cnic_number) formatCnicInput(form.cnic_number);
   const photos = bindPhotos(form);
   onSubmit(form, async (d) => {
@@ -2039,8 +2299,8 @@ views.driver = async (page) => {
       method: 'POST',
       body: {
         licence_number: d.licence_number, licence_photo: photos.licence_photo, vehicle_photo: photos.vehicle_photo,
-        registration_photo: photos.registration_photo,
-        vehicle: { make: d.make, model: d.model, year: Number(d.year), color: d.color, plate: d.plate, seats: Number(d.seats) },
+        registration_photo: photos.registration_photo, driver_declaration: !!d.driver_declaration,
+        vehicle: readCar(form),
       },
     });
     toast('Submitted! We’ll review it soon.');
@@ -2142,7 +2402,7 @@ views.profile = async (page) => {
       ${nativeApp ? '<button class="btn ghost" data-action="server">🌐 Change server</button>' : ''}
       <button class="btn ghost" data-action="logout">Log out</button>
     </div>
-    <p class="small muted legal-links"><a href="privacy.html">Privacy policy</a> · <a href="terms.html">Terms</a> · <a href="download.html">Get the app</a></p>`;
+    <p class="small muted legal-links"><a href="#/how-it-works">How fares &amp; reliability work</a> · <a href="privacy.html">Privacy policy</a> · <a href="terms.html">Terms</a> · <a href="download.html">Get the app</a></p>`;
   onSubmit($('#profile', page), async (d) => {
     me = await api('/me', { method: 'PATCH', body: d });
     toast('Profile saved');
@@ -2223,11 +2483,11 @@ views.user = async (page, _q, id) => {
 views.admin = async (page, q) => {
   if (!requireLogin()) return;
   if (me.role !== 'admin') { page.innerHTML = '<div class="card empty">Admins only.</div>'; return; }
-  const tab = ['verify', 'topups', 'reports', 'users', 'places', 'settings', 'errors'].includes(q.tab) ? q.tab : 'overview';
+  const tab = ['verify', 'cars', 'topups', 'reports', 'users', 'places', 'settings', 'errors'].includes(q.tab) ? q.tab : 'overview';
   const tabLink = (t, label) => `<a class="btn small ${tab === t ? '' : 'ghost'}" href="#/admin?tab=${t}">${label}</a>`;
   page.innerHTML = `
     <h1>Admin</h1>
-    <div class="tabs wrap">${tabLink('overview', 'Overview')}${tabLink('verify', 'Verifications')}${tabLink('topups', 'Top-ups')}${tabLink('reports', 'Reports')}${tabLink('users', 'Users')}${tabLink('places', 'Places')}${tabLink('settings', 'Settings')}${tabLink('errors', 'Errors')}</div>
+    <div class="tabs wrap">${tabLink('overview', 'Overview')}${tabLink('verify', 'Verifications')}${tabLink('cars', 'Car changes')}${tabLink('topups', 'Top-ups')}${tabLink('reports', 'Reports')}${tabLink('users', 'Users')}${tabLink('places', 'Places')}${tabLink('settings', 'Settings')}${tabLink('errors', 'Errors')}</div>
     <div id="admin-body"><p class="muted">Loading…</p></div>`;
   const body = $('#admin-body', page);
 
@@ -2252,6 +2512,7 @@ views.admin = async (page, q) => {
         ${tile('Rides completed', s.rides.completed || 0)}
         ${tile('Seats booked', s.seats_booked)}
         ${tile('Pending verifications', s.pending_verifications, '#/admin?tab=verify')}
+        ${tile('Car changes to check', s.pending_car_changes || 0, '#/admin?tab=cars')}
         ${tile('Open reports', s.open_reports, '#/admin?tab=reports')}
         ${tile('App errors (7 days)', s.errors_7d, '#/admin?tab=errors')}
       </div>
@@ -2277,6 +2538,40 @@ views.admin = async (page, q) => {
     onClick(body, async (action) => {
       if (action !== 'clear-errors') return;
       await api('/admin/errors', { method: 'DELETE' });
+      render();
+    });
+  } else if (tab === 'cars') {
+    await loadCars();
+    const rows = await api('/admin/vehicle-changes');
+    const carRow = (v) => `${esc(carLabel(v))} · <b class="plate">${esc(v.plate)}</b> · ${v.seats} seats${v.car_class ? ` · ${esc(classInfo(v.car_class).label)}` : ''}${v.ac === 0 ? ' · no AC' : ''}`;
+    body.innerHTML = `
+      <p class="muted small">Drivers who want to replace their registered car. Check the photos: the plate must match the registration book and the car must match the details. Their current car stays in use until you approve.</p>
+      ${rows.map((c) => `
+      <div class="card" data-user="${c.user_id}">
+        <div class="ride-top"><b><a href="#/user/${c.user_id}">${esc(c.name)}</a></b><span class="muted small">${esc(c.phone || '')} · ${esc(when(c.since))}</span></div>
+        <div class="list-row"><span class="muted">Current</span><span>${carRow(c.current)}</span></div>
+        <div class="list-row"><span class="muted">New</span><span>${carRow(c.proposed)}</span></div>
+        ${c.proposed.body_type ? `<div class="list-row"><span class="muted">Body · engine</span><span>${esc(c.proposed.body_type)} · ${c.proposed.engine_cc} cc</span></div>` : ''}
+        ${c.proposed.reason ? `<div class="list-row"><span class="muted">Reason</span><span>${esc(c.proposed.reason)}</span></div>` : ''}
+        <div class="docs">${c.documents.map((d) => `<figure><img class="doc" alt="${esc(d.kind)}" data-doc="${d.id}"><figcaption>${d.kind.startsWith('vehicle_photo') ? 'New car' : 'Registration'}</figcaption></figure>`).join('')}</div>
+        <div class="field"><input name="note" placeholder="Reason (required when rejecting)"></div>
+        <div class="actions">
+          <button class="btn" data-action="approve" data-id="${c.user_id}">Approve new car</button>
+          <button class="btn ghost" data-action="reject" data-id="${c.user_id}">Reject</button>
+        </div>
+      </div>`).join('') || '<div class="card empty">No car changes waiting 🎉</div>'}`;
+    body.querySelectorAll('img[data-doc]').forEach(async (img) => {
+      const res = await fetch(`/api/admin/documents/${img.dataset.doc}`, { headers: { authorization: `Bearer ${store.token}` } });
+      if (res.ok) img.src = URL.createObjectURL(await res.blob());
+    });
+    body.addEventListener('click', (e) => {
+      if (e.target.matches('img.doc') && e.target.src) window.open(e.target.src, '_blank');
+    });
+    onClick(body, async (action, data) => {
+      const note = body.querySelector(`[data-user="${data.id}"] input[name=note]`).value.trim();
+      if (action === 'reject' && !note) throw new Error('Please write why the change is not approved');
+      await api(`/admin/vehicle-changes/${data.id}/${action}`, { method: 'POST', body: { note } });
+      toast(action === 'approve' ? 'New car approved' : 'Change rejected');
       render();
     });
   } else if (tab === 'verify') {
@@ -2652,6 +2947,82 @@ window.addEventListener('unhandledrejection', (e) => {
   reportError(r.message || String(r), r.stack);
 });
 
+// ---- How fares and reliability work (public) ---------------------------------
+views['how-it-works'] = async (page) => {
+  await loadCars();
+  const s = settings;
+  const pct = (n) => `${Math.round(n * 100)}%`;
+  const per = (base, f) => (Math.round(base * f * 10) / 10);
+  const pts = (n) => (n > 0 ? `+${n}` : String(n));
+  page.innerHTML = `
+    <h1>How fares & reliability work</h1>
+    <p class="muted">The same rules apply to every driver and passenger. Our team can adjust the numbers; this page always shows the current ones.</p>
+
+    <div class="card">
+      <h3>🚗 Fares by car</h3>
+      <p class="small">Every car gets a class from its model, body type and engine (drivers pick from our car list). The class sets the fare range per km.
+        A standard AC car is the base: <b>Rs ${s.fare_per_km}/km per seat</b> for shared rides (allowed Rs ${s.fare_min_per_km}–${s.fare_max_per_km}).</p>
+      <div class="table-wrap"><table class="earn hiw">
+        <thead><tr><th>Class</th><th>Shared, per seat</th><th>Private, whole car</th></tr></thead>
+        <tbody>${carCatalog.classes.map((c) => `<tr><td><b>${esc(c.label)}</b> ×${c.factor}<div class="muted">${esc(c.body)}<br>e.g. ${esc(c.examples)}</div></td>
+          <td>Rs ${per(s.fare_per_km, c.factor)}/km<div class="muted">${per(s.fare_min_per_km, c.factor)}–${per(s.fare_max_per_km, c.factor)}</div></td>
+          <td>Rs ${per(s.private_per_km, c.factor)}/km<div class="muted">${per(s.private_min_per_km, c.factor)}–${per(s.private_max_per_km, c.factor)}</div></td></tr>`).join('')}</tbody>
+      </table></div>
+      <ul class="small">
+        <li><b>No AC:</b> fares × ${carCatalog.no_ac_factor} (${pct(1 - carCatalog.no_ac_factor)} less) than the same car with AC.</li>
+        <li><b>Seats & space:</b> the price is per seat, so bigger cars earn more by carrying more people; vans and SUVs also get a higher factor for their space.</li>
+        <li><b>Features</b> (large boot, charging, Wi-Fi…) are shown on the ride so passengers can choose; they don’t change the price limits.</li>
+        <li><b>Part of a route:</b> passengers getting on or off at a stop on the way pay by the km they travel.</li>
+        <li><b>Home pickup/drop:</b> ${money(s.home_pickup_per_km)}/km from the pickup point, at least ${money(s.home_pickup_min)}. All of it goes to the driver.</li>
+        <li>For comparison: bus ≈ Rs ${s.ref_bus_per_km}/km per seat, private car hire ≈ Rs ${s.ref_private_car_per_km}/km for the whole car.</li>
+      </ul>
+    </div>
+
+    <div class="card">
+      <h3>🔒 Private rides</h3>
+      <ul class="small">
+        <li>The whole car for one group only, straight from pickup to drop-off: no other passengers, no stops on the way.</li>
+        <li>One price for the car: about <b>Rs ${s.private_per_km}/km</b> for a standard AC car (allowed Rs ${s.private_min_per_km}–${s.private_max_per_km}), times the car’s factor above.</li>
+        <li>Up to as many people as the car has passenger seats.${s.private_requires_id ? ' Passengers need a verified ID (CNIC) to book.' : ''}</li>
+        <li>No student discount; booking fee and commission work as for shared rides.</li>
+      </ul>
+    </div>
+
+    <div class="card">
+      <h3>💳 App fees</h3>
+      <ul class="small">
+        <li>Fares are paid directly to the driver (cash, JazzCash, Easypaisa or bank, as the ride says).</li>
+        <li>Passengers pay a <b>${s.passenger_commission_pct}%</b> booking fee and drivers a <b>${s.driver_commission_pct}%</b> commission from their ABC Rides wallet when a booking is confirmed. The first ${s.free_confirmations} confirmed bookings are free.</li>
+        <li>Drivers who share their car get a commission discount: ${s.share_discount_2_pct}% off with 2 passengers, ${s.share_discount_3_pct}% off with 3 or more.</li>
+        <li>Members below ${s.reliability_threshold}% reliability pay an extra ${money(s.low_reliability_fee)} per booking.</li>
+      </ul>
+    </div>
+
+    <div class="card">
+      <h3>⭐ Reliability</h3>
+      <p class="small">Everyone starts at 100%. It goes up and down with what you do, and everyone can see it on your profile.</p>
+      <div class="table-wrap"><table class="earn hiw"><tbody>
+        <tr><td>Completed trip</td><td><b>${pts(s.reward_completed)}</b></td></tr>
+        <tr><td>Driver: each extra passenger on a completed trip</td><td><b>${pts(s.share_bonus_points)}</b></td></tr>
+        ${[5, 4, 3, 2, 1].map((n) => `<tr><td>Review ${stars(n)} (${n} star${n > 1 ? 's' : ''})</td><td><b>${pts(s[`review_points_${n}`])}</b></td></tr>`).join('')}
+        <tr><td>Driver cancels a ride with booked passengers</td><td><b>-${s.penalty_driver_cancel}</b></td></tr>
+        <tr><td>Passenger cancels a confirmed booking</td><td><b>-${s.penalty_passenger_cancel}</b></td></tr>
+      </tbody></table></div>
+      <p class="small muted">After a trip, the driver and passengers can review each other once. Reviews are public.</p>
+    </div>
+
+    <div class="card">
+      <h3>⏱️ Ride timings</h3>
+      <ul class="small">
+        <li>A ride with no confirmed passengers <b>expires</b> 30 minutes after its departure time.</li>
+        <li>Booking requests the driver hasn’t answered lapse when the ride leaves.</li>
+        <li>A ride with passengers <b>completes by itself</b> ${s.auto_complete_hours} hours after its arrival time if the driver doesn’t mark it, and everyone is asked to review.</li>
+        <li>Ride requests close when their time window ends; offers on them expire.</li>
+      </ul>
+    </div>
+    <p class="small muted">Full rules: <a href="terms.html" target="_blank" rel="noopener">Terms & conditions</a>.</p>`;
+};
+
 // ---- Router -----------------------------------------------------------------
 
 function parseHash() {
@@ -2662,7 +3033,7 @@ function parseHash() {
 
 const NAV_GROUP = {
   search: 'home', requests: 'offer', 'request-offer': 'offer', register: 'login', forgot: 'login', chat: 'inbox', admin: 'profile', user: 'home', ride: 'trips',
-  'verify-phone': 'profile', 'verify-id': 'profile', driver: 'offer', wallet: 'profile',
+  'verify-phone': 'profile', 'verify-id': 'profile', driver: 'offer', wallet: 'profile', 'accept-terms': 'profile', 'how-it-works': 'home',
 };
 
 function renderNav(active) {
@@ -2747,6 +3118,11 @@ async function render() {
   // A fresh element per render so listeners from the previous page are dropped.
   const page = document.createElement('div');
   view.replaceChildren(page);
+  // Accounts that haven't accepted the current terms do that first.
+  if (me && me.terms_current === false && !['accept-terms', 'login', 'register', 'forgot'].includes(name)) {
+    location.hash = `#/accept-terms?next=${encodeURIComponent(location.hash.slice(1) || '/')}`;
+    return;
+  }
   const fn = views[name] || views.home;
   renderNav(name);
   try {

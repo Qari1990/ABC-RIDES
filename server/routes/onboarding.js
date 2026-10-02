@@ -11,13 +11,13 @@ const { smsConfigured, sendSms, normalizePhone } = require('../sms');
 const { emailConfigured, sendEmail } = require('../email');
 const { decodeImage, saveDocuments } = require('../uploads');
 const { selfUser } = require('./users');
+const { validateVehicle } = require('../cars');
 
 const CODE_TTL_MS = 10 * 60 * 1000;
 const RESEND_AFTER_MS = 60 * 1000;
 const MAX_SENDS_PER_HOUR = 5;
 const MAX_ATTEMPTS = 5;
 const CNIC_RE = /^\d{5}-?\d{7}-?\d$/;
-const PLATE_RE = /^(?=.*\d)[A-Z0-9][A-Z0-9 -]{2,11}$/i;
 
 const hashCode = (userId, code) => crypto.createHash('sha256').update(`${userId}:${code}`).digest('hex');
 const formatCnic = (digits) => `${digits.slice(0, 5)}-${digits.slice(5, 12)}-${digits.slice(12)}`;
@@ -132,17 +132,8 @@ module.exports = function onboardingRouter(db, { uploadDir }) {
       throw bad('Please verify your identity (CNIC and selfie) first');
     }
     if (u.driver_status === 'pending') throw bad('Your driver application is already under review');
-    const v = b.vehicle || {};
-    const year = new Date().getFullYear();
-    const vehicle = {
-      make: str(v.make, 'Vehicle make', { required: true, max: 30 }),
-      model: str(v.model, 'Vehicle model', { required: true, max: 30 }),
-      year: int(v.year, 'Vehicle year', { min: 1980, max: year + 1 }),
-      color: str(v.color, 'Vehicle colour', { required: true, max: 20 }),
-      plate: str(v.plate, 'Number plate', { required: true, max: 12 }).toUpperCase(),
-      seats: int(v.seats, 'Passenger seats', { min: 1, max: 8 }),
-    };
-    if (!PLATE_RE.test(vehicle.plate)) throw bad('Number plate looks invalid, e.g. LEA-1234');
+    if (b.driver_declaration !== true) throw bad('Please confirm the driver declaration');
+    const vehicle = validateVehicle(b.vehicle || {});
     const licence = str(b.licence_number, 'Licence number', { required: true, max: 30 });
     const images = {
       driving_license: decodeImage(b.licence_photo, 'Driving licence'),
@@ -151,14 +142,58 @@ module.exports = function onboardingRouter(db, { uploadDir }) {
     };
 
     saveDocuments(db, uploadDir, u.id, images);
-    db.prepare(`
-      INSERT INTO vehicles (user_id, make, model, year, color, plate, seats) VALUES (?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(user_id) DO UPDATE SET make = excluded.make, model = excluded.model, year = excluded.year,
-        color = excluded.color, plate = excluded.plate, seats = excluded.seats, updated_at = excluded.updated_at`)
-      .run(u.id, vehicle.make, vehicle.model, vehicle.year, vehicle.color, vehicle.plate, vehicle.seats);
-    db.prepare(`UPDATE users SET driver_status = 'pending', driver_note = NULL, licence_number = ? WHERE id = ?`).run(licence, u.id);
+    saveVehicle(u.id, vehicle);
+    db.prepare(`UPDATE users SET driver_status = 'pending', driver_note = NULL, licence_number = ?, driver_terms_at = ? WHERE id = ?`)
+      .run(licence, new Date().toISOString(), u.id);
     notifyAdmins(db, 'New driver application', `${u.name}: ${vehicle.make} ${vehicle.model} (${vehicle.plate})`);
     res.json(selfUser(db, reload(u.id)));
+  });
+
+  const saveVehicle = (userId, v) => db.prepare(`
+      INSERT INTO vehicles (user_id, make, model, year, color, plate, seats, body_type, engine_cc, car_class, ac, features)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(user_id) DO UPDATE SET make = excluded.make, model = excluded.model, year = excluded.year,
+        color = excluded.color, plate = excluded.plate, seats = excluded.seats, body_type = excluded.body_type,
+        engine_cc = excluded.engine_cc, car_class = excluded.car_class, ac = excluded.ac, features = excluded.features,
+        pending_change = NULL, pending_since = NULL, change_note = NULL, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')`)
+    .run(userId, v.make, v.model, v.year, v.color, v.plate, v.seats, v.body_type, v.engine_cc, v.car_class, v.ac, JSON.stringify(v.features));
+
+  // ---- Changing the registered car (SOP) ------------------------------------
+  //
+  // An approved driver's car is used for every ride. To replace it for good,
+  // they submit the new car with photos of it and its registration; it is
+  // checked by an admin like the first car, and the old car stays in use until
+  // then. (For a single trip in another car, see "temporary car" on POST /rides.)
+  // Small updates that don't change the car (colour, AC, features) apply at once.
+  router.post('/me/vehicle', requireUser, bigJson, (req, res) => {
+    const u = req.user;
+    const current = db.prepare('SELECT * FROM vehicles WHERE user_id = ?').get(u.id);
+    if (!current || u.driver_status !== 'approved') throw bad('Register as a driver first');
+    const b = req.body || {};
+    const v = validateVehicle(b.vehicle || {});
+    const sameCar = v.make === current.make && v.model === current.model && v.year === current.year && v.plate === current.plate;
+    if (sameCar) {
+      // Same car: colour, seats (up to the model's), AC and features can change straight away.
+      db.prepare('UPDATE vehicles SET color = ?, seats = ?, ac = ?, features = ? WHERE user_id = ?')
+        .run(v.color, v.seats, v.ac, JSON.stringify(v.features), u.id);
+      return res.json(selfUser(db, reload(u.id)));
+    }
+    const images = {
+      vehicle_photo_new: decodeImage(b.vehicle_photo, 'Photo of the new car'),
+      vehicle_registration_new: decodeImage(b.registration_photo, 'Registration of the new car'),
+    };
+    const reason = str(b.reason, 'Reason', { required: true, max: 200 });
+    if (b.driver_declaration !== true) throw bad('Please confirm the driver declaration for the new car');
+    saveDocuments(db, uploadDir, u.id, images);
+    db.prepare('UPDATE vehicles SET pending_change = ?, pending_since = ?, change_note = NULL WHERE user_id = ?')
+      .run(JSON.stringify({ ...v, reason }), new Date().toISOString(), u.id);
+    notifyAdmins(db, 'Car change to review', `${u.name}: ${v.make} ${v.model} (${v.plate}) to replace ${current.make} ${current.model} (${current.plate})`);
+    res.json(selfUser(db, reload(u.id)));
+  });
+
+  router.delete('/me/vehicle/change', requireUser, (req, res) => {
+    db.prepare('UPDATE vehicles SET pending_change = NULL, pending_since = NULL WHERE user_id = ?').run(req.user.id);
+    res.json(selfUser(db, reload(req.user.id)));
   });
 
   // ---- Forgot password (code by email or SMS) -------------------------------

@@ -495,3 +495,10 @@ table.earn th { color: var(--muted); font-weight: 650; font-size: .75rem; text-t
 .update-bar > span { flex: 1; line-height: 1.35; }
 .update-bar .btn { background: #fff; color: var(--brand); }
 .update-bar .icon-btn { background: none; border: 0; color: #fff; font-size: 22px; line-height: 1; padding: 4px; cursor: pointer; }
+
+.terms-box { margin: 8px 0 12px; }
+.terms-box summary { cursor: pointer; }
+.terms-points { margin: 8px 0; padding-left: 18px; font-size: 14px; line-height: 1.5; color: var(--muted); }
+.terms-points li { margin-bottom: 6px; }
+table.hiw td, table.hiw th { white-space: normal; }
+table.hiw td:not(:first-child) { white-space: nowrap; text-align: right; }

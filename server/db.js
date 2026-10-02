@@ -309,13 +309,27 @@ CREATE UNIQUE INDEX IF NOT EXISTS users_verified_phone ON users (verified_phone)
 // Columns added after the first release. CREATE TABLE IF NOT EXISTS leaves
 // older databases untouched, so add any missing columns here.
 const ADDED_COLUMNS = {
+  vehicles: {
+    body_type: 'TEXT',
+    engine_cc: 'INTEGER',
+    car_class: 'TEXT',
+    ac: 'INTEGER',
+    features: 'TEXT', // JSON array
+    pending_change: 'TEXT', // JSON: a replacement car waiting for admin approval
+    pending_since: 'TEXT',
+    change_note: 'TEXT', // the admin's reason when a change is refused
+  },
   ride_requests: {
+    private: 'INTEGER NOT NULL DEFAULT 0',
     from_place_id: 'INTEGER REFERENCES places(id)',
     to_place_id: 'INTEGER REFERENCES places(id)',
     home_pickup: 'TEXT', // JSON { lat, lon, address } when the passenger wants home pickup
     home_drop: 'TEXT',
   },
   users: {
+    terms_version: 'TEXT',
+    terms_accepted_at: 'TEXT',
+    driver_terms_at: 'TEXT',
     role: `TEXT NOT NULL DEFAULT 'user'`,
     suspended: 'INTEGER NOT NULL DEFAULT 0',
     verification_status: `TEXT NOT NULL DEFAULT 'none'`,
@@ -335,6 +349,7 @@ const ADDED_COLUMNS = {
     wallet_balance: 'INTEGER NOT NULL DEFAULT 0',
   },
   bookings: {
+    party_size: 'INTEGER', // people travelling, for private rides
     driver_fee: 'INTEGER NOT NULL DEFAULT 0',
     passenger_fee: 'INTEGER NOT NULL DEFAULT 0',
     confirmed_at: 'TEXT',
@@ -347,6 +362,13 @@ const ADDED_COLUMNS = {
     commission_discount_pct: 'INTEGER NOT NULL DEFAULT 0',
   },
   rides: {
+    ended_reason: 'TEXT', // expired | completed | auto_completed | cancelled
+    car_class: 'TEXT',
+    car_ac: 'INTEGER NOT NULL DEFAULT 1',
+    car_features: 'TEXT', // JSON array
+    temp_vehicle: 'TEXT', // JSON: a different car used just for this ride
+    private: 'INTEGER NOT NULL DEFAULT 0', // whole car for one group; seats_total is then 1
+    car_seats: 'INTEGER', // passenger seats in the car (private rides)
     payment_methods: `TEXT NOT NULL DEFAULT 'cash'`,
     payment_details: 'TEXT',
     duration_minutes: 'INTEGER',
@@ -384,6 +406,7 @@ function openDb(file = process.env.DB_FILE || path.join(__dirname, '..', 'data',
   migrate(db);
   db.exec(POST_MIGRATE);
   seedPlaces(db);
+  require('./cars').backfillVehicles(db);
   return db;
 }
 

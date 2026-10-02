@@ -54,7 +54,7 @@ const VEHICLE = { make: 'Toyota', model: 'Corolla', year: 2019, color: 'White', 
 async function applyAsDriver(u, vehicle = VEHICLE) {
   return call('POST', '/me/driver', {
     token: u.token,
-    body: { licence_number: 'LHR-123456', licence_photo: PNG, vehicle_photo: PNG, registration_photo: PNG, vehicle },
+    body: { licence_number: 'LHR-123456', licence_photo: PNG, vehicle_photo: PNG, registration_photo: PNG, vehicle, driver_declaration: true },
   });
 }
 
@@ -186,7 +186,7 @@ test('driver registration: vehicle checks, approval, plate shown only to confirm
 
   assert.match((await call('POST', '/rides', { token: u.token, body: rideBody({ seats_total: 4 }) })).body.error, /3 passenger seat/);
   const ride = (await call('POST', '/rides', { token: u.token, body: rideBody({ seats_total: 3, instant_book: true }) })).body[0];
-  assert.equal(ride.vehicle, 'Toyota Corolla (White)');
+  assert.equal(ride.vehicle, 'Toyota Corolla 2019 (White)');
   assert.equal(ride.driver.approved_driver, true);
   assert.equal(ride.vehicle_plate, undefined);
 

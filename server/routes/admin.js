@@ -29,6 +29,40 @@ module.exports = function adminRouter(db, { uploadDir }) {
   });
   const countBy = (sql) => Object.fromEntries(db.prepare(sql).all().map((r) => [r.k, r.n]));
 
+  // ---- Car changes waiting for approval (see POST /me/vehicle) ----
+  router.get('/vehicle-changes', (_req, res) => {
+    const rows = db.prepare(`SELECT v.*, u.name, u.phone FROM vehicles v JOIN users u ON u.id = v.user_id
+      WHERE v.pending_change IS NOT NULL ORDER BY v.pending_since`).all();
+    res.json(rows.map((v) => ({
+      user_id: v.user_id, name: v.name, phone: v.phone, since: v.pending_since,
+      current: { make: v.make, model: v.model, year: v.year, color: v.color, plate: v.plate, seats: v.seats },
+      proposed: JSON.parse(v.pending_change),
+      documents: db.prepare(`SELECT id, kind, created_at FROM documents WHERE user_id = ? AND kind IN ('vehicle_photo_new', 'vehicle_registration_new')
+        ORDER BY id DESC LIMIT 2`).all(v.user_id),
+    })));
+  });
+
+  router.post('/vehicle-changes/:userId/:decision', (req, res) => {
+    const v = db.prepare('SELECT * FROM vehicles WHERE user_id = ? AND pending_change IS NOT NULL').get(Number(req.params.userId));
+    if (!v) throw new HttpError(404, 'No car change waiting for this driver');
+    const next = JSON.parse(v.pending_change);
+    if (req.params.decision === 'approve') {
+      db.prepare(`UPDATE vehicles SET make = ?, model = ?, year = ?, color = ?, plate = ?, seats = ?, body_type = ?, engine_cc = ?,
+        car_class = ?, ac = ?, features = ?, pending_change = NULL, pending_since = NULL, change_note = NULL,
+        updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE user_id = ?`)
+        .run(next.make, next.model, next.year, next.color, next.plate, next.seats, next.body_type, next.engine_cc,
+          next.car_class, next.ac, JSON.stringify(next.features || []), v.user_id);
+      notify(db, v.user_id, 'Your new car is approved', `${next.make} ${next.model} (${next.plate}) is now used for your rides.`, '/profile');
+    } else if (req.params.decision === 'reject') {
+      const note = str((req.body || {}).note, 'Reason', { required: true, max: 300 });
+      db.prepare('UPDATE vehicles SET pending_change = NULL, pending_since = NULL, change_note = ? WHERE user_id = ?').run(note, v.user_id);
+      notify(db, v.user_id, 'Car change not approved', note, '/profile');
+    } else {
+      throw bad('Decision must be approve or reject');
+    }
+    res.status(204).end();
+  });
+
   router.get('/errors', (_req, res) => {
     res.json(db.prepare(`SELECT e.*, u.name AS user_name FROM error_log e LEFT JOIN users u ON u.id = e.user_id ORDER BY e.id DESC LIMIT 50`).all());
   });
@@ -55,6 +89,7 @@ module.exports = function adminRouter(db, { uploadDir }) {
       wallet_total: db.prepare('SELECT COALESCE(SUM(wallet_balance), 0) n FROM users').get().n,
       sms_configured: smsConfigured(),
       backup: backupStatus(),
+      pending_car_changes: db.prepare('SELECT COUNT(*) n FROM vehicles WHERE pending_change IS NOT NULL').get().n,
       errors_7d: db.prepare(`SELECT COUNT(*) n FROM error_log WHERE created_at > ?`).get(new Date(Date.now() - 7 * 864e5).toISOString()).n,
     });
   });

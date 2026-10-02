@@ -74,9 +74,9 @@ test('fares must stay within the per-km limits', async () => {
   const stops = [KALMA().id, SADDAR().id];
   let res = await postRide({ stops, fare_per_km: 3 });
   assert.equal(res.status, 400);
-  assert.match(res.body.error, /at least 6/);
+  assert.match(res.body.error, /between Rs 6 and Rs 11/);
   res = await postRide({ stops, fare_per_km: 20 });
-  assert.match(res.body.error, /at most 11/);
+  assert.match(res.body.error, /between Rs 6 and Rs 11/);
 
   // Without stops, the price per seat is checked against the city-to-city distance.
   res = await postRide({ from_city: 'Lahore', to_city: 'Islamabad', price_per_seat: 1000 });

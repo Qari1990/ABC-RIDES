@@ -1,4 +1,5 @@
 const { HttpError } = require('./errors');
+const { TERMS_VERSION } = require('./terms');
 
 // Onboarding requirements the admin can switch on or off (see settings.js).
 // Errors carry a code so the app can send the user to the right setup step.
@@ -9,6 +10,10 @@ function blocked(code, message) {
 }
 
 function requirePhone(settings, user) {
+  // Everyone who books, posts or offers has accepted the current terms.
+  if (user.terms_version !== TERMS_VERSION) {
+    throw blocked('terms_required', 'Please read and accept the updated Terms of Use first.');
+  }
   if (settings.require_phone_verification && !user.phone_verified) {
     throw blocked('phone_unverified', 'Please verify your phone number first.');
   }

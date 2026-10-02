@@ -298,3 +298,23 @@ test('a new ride request alerts drivers on that route (or all drivers) and admin
   assert.equal(far.status, 400);
   assert.match(far.body.error, /near Sargodha/);
 });
+
+test('terms: sign-up needs acceptance; outdated acceptance blocks booking until accepted again', async () => {
+  const res = await call('POST', '/auth/register', {
+    body: { name: 'No Terms', email: 'noterms@test.pk', phone: '+92 300 1212121', password: 'secret123', traveler_type: 'student', gender: 'male' },
+  });
+  assert.equal(res.status, 400);
+  assert.match(res.body.error, /accept the Terms/);
+
+  const { token, user } = await register();
+  assert.equal(user.terms_current, true);
+  db.prepare(`UPDATE users SET terms_version = 'old' WHERE id = ?`).run(user.id);
+  const blocked = await call('POST', '/ride-requests', { token, body: { from_city: 'Lahore', to_city: 'Multan', earliest_at: inHours(30), latest_at: inHours(40) } });
+  assert.equal(blocked.status, 403);
+  assert.equal(blocked.body.code, 'terms_required');
+  const version = (await call('GET', '/settings')).body.terms_version;
+  assert.equal((await call('POST', '/me/accept-terms', { token, body: { version: 'wrong' } })).status, 400);
+  const ok = await call('POST', '/me/accept-terms', { token, body: { version } });
+  assert.equal(ok.body.terms_current, true);
+  assert.equal((await call('POST', '/ride-requests', { token, body: { from_city: 'Lahore', to_city: 'Multan', earliest_at: inHours(30), latest_at: inHours(40) } })).status, 201);
+});

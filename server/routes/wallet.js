@@ -1,6 +1,7 @@
 const express = require('express');
 const { mapConfig } = require('../security');
 const { fcmConfigured } = require('../fcm');
+const { TERMS_VERSION } = require('../terms');
 const { requireUser } = require('../auth');
 const { HttpError, bad, str, int, oneOf } = require('../errors');
 const { notify } = require('../notify');
@@ -14,7 +15,7 @@ module.exports = function walletRouter(db) {
   const router = express.Router();
 
   // Fees, booking mode and requirements, so the app can explain them.
-  router.get('/settings', (_req, res) => res.json({ ...getSettings(db), map: mapConfig(), app_push: fcmConfigured() }));
+  router.get('/settings', (_req, res) => res.json({ ...getSettings(db), map: mapConfig(), app_push: fcmConfigured(), terms_version: TERMS_VERSION }));
 
   router.get('/me/wallet', requireUser, (req, res) => {
     const settings = getSettings(db);

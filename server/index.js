@@ -4,6 +4,7 @@ const { createApp } = require('./app');
 const { adminEmails } = require('./routes/users');
 const { seedIfEmpty, removeDemoData } = require('./seed');
 const { restore, startBackups, closeBackups } = require('./backup');
+const { startLifecycle } = require('./lifecycle');
 
 const port = Number(process.env.PORT) || 3000;
 const dbFile = process.env.DB_FILE || path.join(__dirname, '..', 'data', 'abc-rides.db');
@@ -32,6 +33,8 @@ async function main() {
   }
 
   const backups = startBackups(db, { uploadDir });
+  // Expire, complete and tidy rides, bookings and requests as time passes.
+  startLifecycle(db);
   const server = createApp(db, { uploadDir }).listen(port, () => {
     console.log(`ABC Rides running at http://localhost:${port}`);
     keepAwake(process.env.KEEP_AWAKE_URL || process.env.RENDER_EXTERNAL_URL);

@@ -6,6 +6,8 @@ const { normalizePhone } = require('../sms');
 const { getSettings } = require('../settings');
 const { freeConfirmationsLeft } = require('../wallet');
 const { vapidKeys, saveSubscription, saveAppToken } = require('../push');
+const { TERMS_VERSION } = require('../terms');
+const { shapeVehicle } = require('../cars');
 
 const TRAVELER_TYPES = ['professional', 'student', 'traveler'];
 const GENDERS = ['male', 'female', 'other'];
@@ -44,6 +46,7 @@ function publicUser(db, u) {
 function selfUser(db, u) {
   return {
     ...publicUser(db, u),
+    terms_current: u.terms_version === TERMS_VERSION,
     email: u.email,
     phone: u.phone,
     role: u.role,
@@ -54,7 +57,14 @@ function selfUser(db, u) {
     student_status: u.student_status,
     driver_status: u.driver_status,
     driver_note: u.driver_note,
-    vehicle: db.prepare('SELECT make, model, year, color, plate, seats FROM vehicles WHERE user_id = ?').get(u.id) || null,
+    ...(() => {
+      const v = db.prepare('SELECT * FROM vehicles WHERE user_id = ?').get(u.id);
+      return {
+        vehicle: shapeVehicle(v),
+        vehicle_change: v && v.pending_change ? { ...JSON.parse(v.pending_change), since: v.pending_since } : null,
+        vehicle_change_note: v ? v.change_note : null,
+      };
+    })(),
     wallet_balance: u.wallet_balance,
     free_confirmations_left: freeConfirmationsLeft(db, getSettings(db), u.id),
     emergency_name: u.emergency_name,
@@ -99,12 +109,14 @@ module.exports = function usersRouter(db) {
     if (db.prepare('SELECT 1 FROM users WHERE email = ?').get(email)) {
       throw new HttpError(409, 'An account with this email already exists');
     }
+    if (body.accept_terms !== true) throw bad('Please read and accept the Terms of Use, Privacy Policy and disclaimer to sign up');
     const { lastInsertRowid } = db.prepare(`
       INSERT INTO users (name, email, phone, password_hash, traveler_type, gender, organization, bio, emergency_name, emergency_phone, role)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .run(f.name, email, f.phone, hashPassword(body.password), f.traveler_type, f.gender, f.organization, f.bio,
         f.emergency_name, f.emergency_phone, adminEmails().includes(email) ? 'admin' : 'user');
     signups.hit(req.ip);
+    db.prepare('UPDATE users SET terms_version = ?, terms_accepted_at = ? WHERE id = ?').run(TERMS_VERSION, new Date().toISOString(), lastInsertRowid);
     const user = db.prepare('SELECT * FROM users WHERE id = ?').get(lastInsertRowid);
     res.status(201).json({ token: createSession(db, user.id), user: selfUser(db, user) });
   });
@@ -150,6 +162,12 @@ module.exports = function usersRouter(db) {
     if (f.phone && normalizePhone(f.phone) !== normalizePhone(req.user.phone)) {
       db.prepare('UPDATE users SET phone_verified = 0, verified_phone = NULL WHERE id = ?').run(req.user.id);
     }
+    res.json(selfUser(db, db.prepare('SELECT * FROM users WHERE id = ?').get(req.user.id)));
+  });
+
+  router.post('/me/accept-terms', requireUser, (req, res) => {
+    if ((req.body || {}).version !== TERMS_VERSION) throw bad('Please reload the app and accept the latest terms');
+    db.prepare('UPDATE users SET terms_version = ?, terms_accepted_at = ? WHERE id = ?').run(TERMS_VERSION, new Date().toISOString(), req.user.id);
     res.json(selfUser(db, db.prepare('SELECT * FROM users WHERE id = ?').get(req.user.id)));
   });
 

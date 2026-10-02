@@ -82,17 +82,23 @@ module.exports = function requestsRouter(db) {
     if (open >= 10) throw bad('You can have at most 10 open ride requests');
     const fromPlace = pointIn(b.from_place_id, from, 'Pickup');
     const toPlace = pointIn(b.to_place_id, to, 'Drop-off');
+    const isPrivate = !!b.private;
+    if (isPrivate && getSettings(db).private_requires_id && req.user.verification_status !== 'verified') {
+      const err = new HttpError(403, 'Private rides are for ID-verified passengers. Verify your CNIC first.');
+      err.code = 'id_required';
+      throw err;
+    }
     const homePickup = homeIn(b.home_pickup, from, fromPlace, 'home pickup');
     const homeDrop = homeIn(b.home_drop, to, toPlace, 'home drop-off');
 
     const { lastInsertRowid } = db.prepare(`
-      INSERT INTO ride_requests (passenger_id, from_city, to_city, earliest_at, latest_at, seats, max_price, notes, from_place_id, to_place_id, home_pickup, home_drop)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+      INSERT INTO ride_requests (passenger_id, from_city, to_city, earliest_at, latest_at, seats, max_price, notes, from_place_id, to_place_id, home_pickup, home_drop, private)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
       req.user.id, from, to, earliest.toISOString(), latest.toISOString(),
       int(b.seats, 'Seats', { min: 1, max: 8, fallback: 1 }),
       int(b.max_price, 'Max price', { min: 0, max: 100000, fallback: null }),
       str(b.notes, 'Notes', { max: 300 }),
-      fromPlace, toPlace, homePickup, homeDrop,
+      fromPlace, toPlace, homePickup, homeDrop, isPrivate ? 1 : 0,
     );
     const row = db.prepare('SELECT * FROM ride_requests WHERE id = ?').get(lastInsertRowid);
     const notified = alertDrivers(row, req.user);
@@ -120,7 +126,8 @@ module.exports = function requestsRouter(db) {
     const body = [
       `${passenger.name} · ${r.seats} seat${r.seats > 1 ? 's' : ''} · ${when(r.earliest_at)}`,
       from ? `from ${from.name}` : null,
-      r.max_price ? `up to Rs ${r.max_price}/seat` : null,
+      r.private ? 'private car (whole car)' : null,
+      r.max_price ? `up to Rs ${r.max_price}${r.private ? ' for the car' : '/seat'}` : null,
       homes.length ? `wants ${homes.join(' & ')}` : null,
     ].filter(Boolean).join(' · ');
     const link = `/requests?${new URLSearchParams({ from: r.from_city, to: r.to_city })}`;

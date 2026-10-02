@@ -9,6 +9,7 @@ const { placeKm, cityRoadKm, minutesFor } = require('../geo');
 const { roundFare, homeCharge } = require('../fares');
 const { confirmBooking, confirmationFee } = require('../wallet');
 const { notify, when } = require('../notify');
+const { fareRange, shapeVehicle, describeVehicle } = require('../cars');
 
 // Drivers answer a passenger's ride request with an offer (time, price per
 // seat, seats in the car) instead of posting a ride and hoping it matches.
@@ -30,7 +31,9 @@ function fareInfo(db, settings, r) {
   if (!km) return null;
   return {
     km,
-    suggested_price: roundFare(km * settings.fare_per_km),
+    // A standard car with AC; drivers' cars scale it (see "How fares work").
+    suggested_price: roundFare(km * (r.private ? settings.private_per_km : settings.fare_per_km)),
+    per_km: r.private ? settings.private_per_km : settings.fare_per_km,
     offered_per_km: r.max_price ? Math.round((r.max_price / km) * 10) / 10 : null,
   };
 }
@@ -50,7 +53,7 @@ function shapeOffer(db, settings, o, viewer, request) {
   };
   // The passenger sees what accepting will cost them up front.
   if (viewer && viewer.id === request.passenger_id && o.status === 'pending') {
-    const fare = o.price_per_seat * request.seats;
+    const fare = request.private ? o.price_per_seat : o.price_per_seat * request.seats;
     const fee = confirmationFee(db, settings, viewer, fare, 'passenger');
     out.passenger_fee = fee.total;
     out.fare_total = fare;
@@ -110,17 +113,22 @@ function offersRouter(db) {
     const toPlace = pointIn(b.to_place_id, r.to_city, r.to_place_id);
     const km = requestKm(db, r, place(db, fromPlace) || undefined, place(db, toPlace) || undefined);
 
-    const price = int(b.price_per_seat, 'Price per seat', { min: 0, max: 100000 });
+    const price = int(b.price_per_seat, r.private ? 'Price for the car' : 'Price per seat', { min: 0, max: 100000 });
+    const vehicle = db.prepare('SELECT * FROM vehicles WHERE user_id = ?').get(req.user.id);
+    const range = fareRange(settings, vehicle ? shapeVehicle(vehicle) : null, { isPrivate: !!r.private });
+    const what = r.private ? 'the price for the car' : 'the price per seat';
     if (settings.enforce_fare_limits && km) {
-      // Never above the fair maximum; below the minimum only if the passenger asked for that price.
-      if (price > km * settings.fare_max_per_km) throw bad(`For about ${km} km the price per seat can be at most Rs ${roundFare(km * settings.fare_max_per_km)}`);
-      if (price < km * settings.fare_min_per_km && !(r.max_price && price <= r.max_price)) {
-        throw bad(`For about ${km} km the price per seat must be at least Rs ${roundFare(km * settings.fare_min_per_km)}`);
+      // Never above the fair maximum for this car; below the minimum only if the passenger asked for that price.
+      if (price > km * range.max) throw bad(`For about ${km} km in your car, ${what} can be at most Rs ${roundFare(km * range.max)}`);
+      if (price < km * range.min && !(r.max_price && price <= r.max_price)) {
+        throw bad(`For about ${km} km in your car, ${what} must be at least Rs ${roundFare(km * range.min)}`);
       }
     }
-    const vehicle = db.prepare('SELECT seats FROM vehicles WHERE user_id = ?').get(req.user.id);
-    const share = b.share_remaining === undefined ? true : !!b.share_remaining;
-    const seatsTotal = share ? int(b.seats_total, 'Seats in your car', { min: r.seats, max: 8, fallback: Math.max(r.seats, vehicle ? vehicle.seats : r.seats) }) : r.seats;
+    if (r.private && vehicle && vehicle.seats < r.seats) throw bad(`They are ${r.seats} people; your car has ${vehicle.seats} passenger seats`);
+    // A private trip is never shared.
+    const share = r.private ? false : (b.share_remaining === undefined ? true : !!b.share_remaining);
+    const seatsTotal = r.private ? (vehicle ? vehicle.seats : r.seats)
+      : share ? int(b.seats_total, 'Seats in your car', { min: r.seats, max: 8, fallback: Math.max(r.seats, vehicle ? vehicle.seats : r.seats) }) : r.seats;
     if (vehicle && seatsTotal > vehicle.seats) throw bad(`Your car has ${vehicle.seats} passenger seat(s)`);
     const homePickup = b.home_pickup ? 1 : 0;
     const homeDrop = b.home_drop ? 1 : 0;
@@ -143,7 +151,7 @@ function offersRouter(db) {
         .run(...fields, r.id, req.user.id).lastInsertRowid);
     }
     notify(db, r.passenger_id,
-      `${existing ? 'Updated offer' : 'New offer'} from ${req.user.name}: Rs ${price}/seat`,
+      `${existing ? 'Updated offer' : 'New offer'} from ${req.user.name}: Rs ${price}${r.private ? ' for the car' : '/seat'}`,
       `${r.from_city} → ${r.to_city}, ${when(departure.toISOString())}${km ? ` · Rs ${(price / km).toFixed(1)}/km` : ''}. Accept it to book.`,
       '/trips?tab=requests');
     res.status(existing ? 200 : 201).json(shapeOffer(db, settings, getOffer(id), req.user, r));
@@ -169,18 +177,23 @@ function offersRouter(db) {
         { place_id: from.id, city: from.city, name: from.name, lat: from.lat, lon: from.lon, km: 0 },
         { place_id: to.id, city: to.city, name: to.name, lat: to.lat, lon: to.lon, km },
       ] : null;
-      const vehicle = db.prepare('SELECT * FROM vehicles WHERE user_id = ?').get(driver.id);
+      const vehicleRow = db.prepare('SELECT * FROM vehicles WHERE user_id = ?').get(driver.id);
+      const vehicle = vehicleRow ? shapeVehicle(vehicleRow) : null;
       // Payment details as on the driver's latest ride.
       const last = db.prepare('SELECT payment_methods, payment_details FROM rides WHERE driver_id = ? ORDER BY id DESC LIMIT 1').get(driver.id);
       const ride = Number(db.prepare(`
         INSERT INTO rides (driver_id, from_city, to_city, pickup_point, dropoff_point, departure_at, seats_total, price_per_seat,
-          vehicle, notes, payment_methods, payment_details, duration_minutes, stops, fare_per_km, home_pickup, home_drop, home_radius_km)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
-        driver.id, r.from_city, r.to_city, from ? from.name : null, to ? to.name : null, o.departure_at, o.seats_total, o.price_per_seat,
-        vehicle ? `${vehicle.make} ${vehicle.model} (${vehicle.color})` : null, o.note,
+          vehicle, notes, payment_methods, payment_details, duration_minutes, stops, fare_per_km, home_pickup, home_drop, home_radius_km,
+          car_class, car_ac, car_features, private, car_seats)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+        driver.id, r.from_city, r.to_city, from ? from.name : null, to ? to.name : null, o.departure_at,
+        r.private ? 1 : o.seats_total, o.price_per_seat,
+        describeVehicle(vehicle), o.note,
         last ? last.payment_methods : 'cash', last ? last.payment_details : null,
-        km ? minutesFor(km) : null, stops ? JSON.stringify(stops) : null, km ? Math.round(o.price_per_seat / km) : null,
+        km ? minutesFor(km) : null, stops ? JSON.stringify(stops) : null, km ? Math.round((o.price_per_seat / km) * 10) / 10 : null,
         o.home_pickup, o.home_drop, o.home_radius_km,
+        vehicle ? vehicle.car_class : null, vehicle && vehicle.ac === 0 ? 0 : 1, vehicle ? JSON.stringify(vehicle.features) : null,
+        r.private ? 1 : 0, o.seats_total,
       ).lastInsertRowid);
       const rideRow = db.prepare('SELECT * FROM rides WHERE id = ?').get(ride);
 
@@ -195,10 +208,10 @@ function offersRouter(db) {
       const homeTotal = (pickupHome?.charge || 0) + (dropHome?.charge || 0);
       const bookingId = Number(db.prepare(`
         INSERT INTO bookings (ride_id, passenger_id, seats, price_per_seat, status, message, board_stop, alight_stop, segment_km,
-          home_pickup, home_drop, home_charge)
-        VALUES (?, ?, ?, ?, 'pending', ?, 0, 1, ?, ?, ?, ?)`).run(
-        ride, req.user.id, r.seats, o.price_per_seat, r.notes, km,
-        pickupHome ? JSON.stringify(pickupHome) : null, dropHome ? JSON.stringify(dropHome) : null, homeTotal,
+          home_pickup, home_drop, home_charge, party_size)
+        VALUES (?, ?, ?, ?, 'pending', ?, 0, 1, ?, ?, ?, ?, ?)`).run(
+        ride, req.user.id, r.private ? 1 : r.seats, o.price_per_seat, r.notes, km,
+        pickupHome ? JSON.stringify(pickupHome) : null, dropHome ? JSON.stringify(dropHome) : null, homeTotal, r.private ? r.seats : null,
       ).lastInsertRowid);
       // Fees for both sides now; throws (and undoes everything) if a wallet is short.
       confirmBooking(db, settings, db.prepare('SELECT * FROM bookings WHERE id = ?').get(bookingId), rideRow, 'passenger');
