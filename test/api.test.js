@@ -257,3 +257,44 @@ test('web push: key, subscribe, alerts and chat messages are pushed', async () =
     webpush.sendNotification = original;
   }
 });
+
+test('a new ride request alerts drivers on that route (or all drivers) and admins; home pickup/drop saved', async () => {
+  const routeDriver = await register();
+  const otherDriver = await register();
+  db.prepare(`UPDATE users SET driver_status = 'approved' WHERE id IN (?, ?)`).run(routeDriver.user.id, otherDriver.user.id);
+  const admin = await register();
+  db.prepare(`UPDATE users SET role = 'admin' WHERE id = ?`).run(admin.user.id);
+  await call('POST', '/rides', { token: routeDriver.token, body: rideBody({ from_city: 'Sialkot', to_city: 'Sargodha' }) });
+  const passenger = await register({ name: 'Rida Passenger' });
+  const titles = (u) => db.prepare('SELECT title, body FROM notifications WHERE user_id = ? ORDER BY id').all(u.user.id);
+
+  const [sialkot] = (await call('GET', '/places?city=Sialkot')).body;
+  const res = await call('POST', '/ride-requests', {
+    token: passenger.token,
+    body: {
+      from_city: 'Sialkot', to_city: 'Sargodha', earliest_at: inHours(30), latest_at: inHours(40), from_place_id: sialkot.id,
+      home_pickup: { lat: sialkot.lat + 0.01, lon: sialkot.lon + 0.01, address: 'House 5, Street 2' },
+    },
+  });
+  assert.equal(res.status, 201, JSON.stringify(res.body));
+  assert.equal(res.body.drivers_notified, 1, 'only the driver who drives this route');
+  assert.equal(res.body.home_pickup.address, 'House 5, Street 2');
+  assert.equal(res.body.home_drop, null);
+  assert.match(titles(routeDriver).at(-1).title, /New ride request: Sialkot → Sargodha/);
+  assert.match(titles(routeDriver).at(-1).body, /Rida Passenger.*wants home pickup/);
+  assert.equal(titles(otherDriver).filter((n) => /New ride request/.test(n.title)).length, 0);
+  assert.match(titles(admin).at(-1).title, /New ride request/);
+
+  // Nobody drives Sukkur → Gilgit yet: every approved driver hears about it.
+  const res2 = await call('POST', '/ride-requests', { token: passenger.token, body: { from_city: 'Sukkur', to_city: 'Gilgit', earliest_at: inHours(30), latest_at: inHours(40) } });
+  assert.ok(res2.body.drivers_notified >= 2);
+  assert.match(titles(otherDriver).at(-1).title, /Sukkur → Gilgit/);
+
+  // A home far from the city is refused.
+  const far = await call('POST', '/ride-requests', {
+    token: passenger.token,
+    body: { from_city: 'Sialkot', to_city: 'Sargodha', earliest_at: inHours(30), latest_at: inHours(40), home_drop: { lat: 24.86, lon: 67.0 } },
+  });
+  assert.equal(far.status, 400);
+  assert.match(far.body.error, /near Sargodha/);
+});

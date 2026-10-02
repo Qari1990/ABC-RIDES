@@ -9,6 +9,12 @@ Drivers who are already going between cities post their empty seats; passengers 
 - **Maps** (Leaflet + OpenStreetMap, no API key): route maps with stops on every ride, tap-to-choose pickup points
   for ride requests, tap-your-home on the map for home pickup, suggested stops you can add from the map, and
   Google Maps directions links.
+- **Ride requests reach drivers**: a new passenger request alerts (inbox + push) the drivers who drive that
+  route, or every approved driver when nobody does yet, and admins (Admin → Settings). Requests can include
+  pickup/drop-off points and home pickup/drop chosen on a map; "Offer this ride" fills all of it in.
+- **Live updates**: ride lists, requests, trips, inbox and ride pages refresh themselves (every 20 s, when the
+  app comes back to the screen, and when a new alert arrives), without disturbing a form being filled in.
+- **Search near your pickup point**: choose where you'll get on; rides are sorted by how close their stop is.
 - **Error log**: crashes on users' phones and server errors appear in **Admin → Errors**.
 - **Push notifications**: booking, ride and chat alerts with the app closed, turned on in Inbox or Profile. The
   Android app uses Firebase Cloud Messaging (free); browsers and home-screen web apps use Web Push (no account).

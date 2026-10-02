@@ -37,6 +37,7 @@ const SPEC = {
   require_id_for_booking: { default: false, label: 'Passengers must be ID-verified to book' },
   require_driver_approval: { default: true, label: 'Drivers must be approved before posting rides' },
   student_price_requires_verification: { default: true, label: 'Student prices only for verified students' },
+  notify_admins_of_requests: { default: true, label: 'Tell admins about every new passenger ride request' },
   topup_accounts: {
     default: 'JazzCash: 03XX-XXXXXXX (ABC Rides)\nEasypaisa: 03XX-XXXXXXX (ABC Rides)',
     maxLength: 500, label: 'Accounts users send top-ups to',

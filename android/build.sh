@@ -46,7 +46,7 @@ JAVA
 
 # The source manifest has no package or version (Gradle style); add them.
 sed "s|<manifest xmlns:android=\"http://schemas.android.com/apk/res/android\">|<manifest xmlns:android=\"http://schemas.android.com/apk/res/android\" package=\"$APP_ID\" android:versionCode=\"$(prop versionCode)\" android:versionName=\"$(prop versionName)\"><uses-sdk android:minSdkVersion=\"$(prop minSdk)\" android:targetSdkVersion=\"$(prop targetSdk)\" />|" \
-  AndroidManifest.xml > "$OUT/AndroidManifest.xml"
+  AndroidManifest.xml | grep -v 'android:roundIcon=' > "$OUT/AndroidManifest.xml"  # roundIcon needs API 25+, newer than our android.jar
 grep -q 'package=' "$OUT/AndroidManifest.xml" || { echo "Could not prepare the manifest"; exit 1; }
 
 echo "==> Generating R.java"

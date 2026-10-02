@@ -76,6 +76,23 @@ const mapLink = (lat, lon) => `https://maps.google.com/?q=${lat},${lon}`;
 const segmentQuery = (seg) => (seg ? `?board=${seg.board}&alight=${seg.alight}` : '');
 const rideUrl = (id) => `${location.origin}/#/ride/${id}`;
 
+// ---- Live updates -------------------------------------------------------------
+// Lists refresh themselves: every 20 s while the app is on screen, as soon as it
+// comes back to the foreground, and when a new alert or message arrives.
+let liveHooks = [];
+function live(page, fn, ms = 20000) {
+  const run = () => { if (page.isConnected && document.visibilityState === 'visible') fn().catch(() => {}); };
+  pageTimers.push(setInterval(run, ms));
+  liveHooks.push(run);
+}
+// Replaces a list only when its content changed, so nothing flickers or jumps.
+function setList(el, html) {
+  if (!el || el.__html === html) return false;
+  el.__html = html;
+  el.innerHTML = html;
+  return true;
+}
+
 function toast(msg, isError = false) {
   const el = $('#toast');
   el.textContent = msg;
@@ -228,6 +245,7 @@ function rideCard(r) {
   const startAt = r.stops ? timeAtStop(r, seg.board) : r.departure_at;
   const endAt = r.stops ? timeAtStop(r, seg.alight) : r.arrival_at;
   const tags = [
+    r.near && `<span class="badge brand">📍 ${r.near.km < 1 ? 'At' : `${r.near.km} km from`} ${esc(r.near.name)}</span>`,
     r.student_discount_pct > 0 && `<span class="badge student">🎓 ${r.student_discount_pct}% student discount</span>`,
     r.women_only && '<span class="badge women">♀ Women only</span>',
     r.instant_book && '<span class="badge brand">⚡ Instant booking</span>',
@@ -262,6 +280,14 @@ function requestCard(r, { mine = false } = {}) {
   const offerParams = new URLSearchParams({ from: r.from_city, to: r.to_city, date: localInputValue(day).slice(0, 10) });
   if (r.from_place) offerParams.set('pickup', r.from_place.id);
   if (r.to_place) offerParams.set('drop', r.to_place.id);
+  // The driver needs a home radius that reaches the passenger's home.
+  const homeKm = (h, p) => (h && p ? Math.ceil(haversineKm(p.lat, p.lon, h.lat, h.lon) * 1.3) : 0);
+  if (r.home_pickup || r.home_drop) {
+    offerParams.set('home', [r.home_pickup && 'pickup', r.home_drop && 'drop'].filter(Boolean).join(','));
+    offerParams.set('home_km', String(Math.max(5, homeKm(r.home_pickup, r.from_place), homeKm(r.home_drop, r.to_place))));
+  }
+  const homeLine = (h, label) => (h
+    ? `<div class="small">🏠 ${label}: ${esc(h.address || 'location shared')} · <a href="${mapLink(h.lat, h.lon)}" target="_blank" rel="noopener">map</a></div>` : '');
   const point = (p, label) => (p
     ? `<div class="small">📍 ${label}: <b>${esc(p.name)}</b>, ${esc(p.city)} · <a href="${mapLink(p.lat, p.lon)}" target="_blank" rel="noopener">map</a></div>`
     : `<div class="small muted">📍 ${label}: anywhere in the city</div>`);
@@ -274,7 +300,7 @@ function requestCard(r, { mine = false } = {}) {
       </div>
       ${r.max_price ? `<div class="price">≤ ${money(r.max_price)}<small>per seat</small></div>` : ''}
     </div>
-    <div class="request-points">${point(r.from_place, 'Pickup')}${point(r.to_place, 'Drop-off')}</div>
+    <div class="request-points">${point(r.from_place, 'Pickup')}${point(r.to_place, 'Drop-off')}${homeLine(r.home_pickup, 'Home pickup')}${homeLine(r.home_drop, 'Home drop-off')}</div>
     ${r.notes ? `<p class="small" style="margin:8px 0 0">“${esc(r.notes)}”</p>` : ''}
     <div class="list-row" style="margin-top:8px">
       ${mine ? `<span class="badge ${r.status === 'open' && !isPast(r.latest_at) ? 'pending' : 'cancelled'}">${r.status === 'open' && !isPast(r.latest_at) ? 'open' : 'closed'}</span>`
@@ -418,15 +444,33 @@ views.home = async (page) => {
     <div id="upcoming">${skeletons(3)}</div>
     ${nativeApp ? '' : `<p class="small muted legal-links"><a href="download.html">${icon('phone')} Get the Android app</a> · <a href="privacy.html">Privacy</a> · <a href="terms.html">Terms</a></p>`}`;
   bindSearch(page);
-  const rides = await api('/rides');
-  $('#upcoming', page).innerHTML = rides.length
-    ? rides.slice(0, 10).map(rideCard).join('')
-    : `<div class="card empty">${icon('car', 'i-big')}<h2>No rides yet</h2><p>Be the first to <a href="#/offer">offer one</a>.</p></div>`;
+  const fill = async () => {
+    const rides = await api('/rides');
+    setList($('#upcoming', page), rides.length
+      ? rides.slice(0, 10).map(rideCard).join('')
+      : `<div class="card empty">${icon('car', 'i-big')}<h2>No rides yet</h2><p>Be the first to <a href="#/offer">offer one</a>.</p></div>`);
+  };
+  await fill();
+  live(page, fill);
 };
 
 views.search = async (page, q) => {
-  page.innerHTML = `${searchForm(q, { compact: true })}<div id="results">${skeletons(3)}</div>`;
+  page.innerHTML = `${searchForm(q, { compact: true })}<div id="near-box"></div><div id="results">${skeletons(3)}</div>`;
   bindSearch(page);
+  // Optional: the passenger's own pickup point; rides are sorted by how close
+  // their stop in that city is.
+  const points = q.from ? await api(`/places?city=${encodeURIComponent(q.from)}`).catch(() => []) : [];
+  const near = points.find((p) => String(p.id) === String(q.near || '')) || null;
+  if (points.length) {
+    $('#near-box', page).innerHTML = `
+      <div class="field near-field"><label for="near">📍 Where will you get on in ${esc(q.from)}?</label>
+        <select id="near"><option value="">Any pickup point</option>${points.map((p) => `<option value="${p.id}" ${near && near.id === p.id ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select></div>`;
+    $('#near', page).addEventListener('change', (e) => {
+      const next = new URLSearchParams(Object.entries(q).filter(([k, v]) => k !== 'near' && v));
+      if (e.target.value) next.set('near', e.target.value);
+      location.hash = `#/search?${next}`;
+    });
+  }
   const params = new URLSearchParams({ from: q.from || '', to: q.to || '', seats: q.seats || '1' });
   if (q.women_only) params.set('women_only', 'true');
   if (q.date) {
@@ -434,18 +478,29 @@ views.search = async (page, q) => {
     params.set('after', start.toISOString());
     params.set('before', end.toISOString());
   }
+  const fill = async () => {
   let rides = await api(`/rides?${params}`);
   if (TIME_SLOTS[q.time]) {
     const [, from, to] = TIME_SLOTS[q.time];
     rides = rides.filter((r) => { const h = new Date(r.departure_at).getHours(); return h >= from && h < to; });
   }
-  const requestLink = `#/requests/new?${new URLSearchParams({ from: q.from || '', to: q.to || '', date: q.date || '', seats: q.seats || '1' })}`;
-  $('#results', page).innerHTML = `
+  if (near) {
+    for (const r of rides) {
+      const st = r.stops && r.stops[(r.segment || {}).board || 0];
+      if (st && st.lat != null) r.near = { km: Math.round(haversineKm(near.lat, near.lon, st.lat, st.lon) * 1.3 * 10) / 10, name: near.name };
+    }
+    rides.sort((a, b) => (a.near ? a.near.km : 1e9) - (b.near ? b.near.km : 1e9) || new Date(a.departure_at) - new Date(b.departure_at));
+  }
+  const requestLink = `#/requests/new?${new URLSearchParams({ from: q.from || '', to: q.to || '', date: q.date || '', seats: q.seats || '1', ...(near ? { pickup: near.id } : {}) })}`;
+  setList($('#results', page), `
     <h2>${rides.length} ride${rides.length === 1 ? '' : 's'} from ${esc(q.from)} to ${esc(q.to)}</h2>
     ${rides.map(rideCard).join('') || `<div class="card empty">No rides found${q.date ? ' for this day' : ''}.
       ${q.date ? `<br><a href="#/search?${new URLSearchParams({ from: q.from || '', to: q.to || '', seats: q.seats || '1' })}">See all upcoming dates</a>` : ''}</div>`}
     <div class="card"><b>Can’t find the right ride?</b><p class="muted small">Post a request and we’ll notify you when a driver offers a matching ride.</p>
-      <a class="btn ghost" href="${requestLink}">🙋 Post a ride request</a></div>`;
+      <a class="btn ghost" href="${requestLink}">🙋 Post a ride request</a></div>`);
+  };
+  await fill();
+  live(page, fill);
 };
 
 function sosPanel(r) {
@@ -674,6 +729,22 @@ views.ride = async (page, q, id) => {
       .catch((err) => { console.warn('Map failed:', err); el.hidden = true; });
   };
   if (stopsKnown) drawRideMap();
+  // Re-draw when something changes (a booking, an acceptance, seats, the ride's
+  // status), unless the user is in the middle of filling a form.
+  const state = (x) => JSON.stringify([x.status, x.seats_left, x.my_booking && x.my_booking.status,
+    (x.bookings || []).map((y) => [y.id, y.status])]);
+  const shown = state(r);
+  live(page, async () => {
+    const busy = page.querySelector('details[open], [name^=want_]:checked')
+      || (document.activeElement && page.contains(document.activeElement) && /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName));
+    if (busy) return;
+    const fresh = await api(`/rides/${id}?${qs}`);
+    if (state(fresh) !== shown && page.isConnected) {
+      const y = window.scrollY;
+      await render();
+      window.scrollTo(0, y);
+    }
+  });
   const studentOk = me && me.traveler_type === 'student' && (!settings.student_price_requires_verification || me.student_verified);
   // Mirrors the server: whole route at the posted price, parts of it by km.
   const seatPrice = (bIdx, aIdx) => {
@@ -1071,6 +1142,14 @@ views.offer = async (page, q) => {
   const preselect = (select, id) => { if (id && select.querySelector(`option[value="${CSS.escape(id)}"]`)) select.value = id; };
   preselect(form.pickup_place, q.pickup);
   preselect(form.drop_place, q.drop);
+  // The passenger asked for home pickup/drop: offer it, with a radius that reaches them.
+  if (q.home) {
+    const wanted = q.home.split(',');
+    if (wanted.includes('pickup')) form.home_pickup.checked = true;
+    if (wanted.includes('drop')) form.home_drop.checked = true;
+    const km = Number(q.home_km);
+    if (km) form.home_radius_km.value = String(Math.min(settings.home_max_radius_km, Math.max(Number(form.home_radius_km.value) || 0, km)));
+  }
   replan(true);
 
   // Step-by-step: each step is checked before moving on, the last one reviews and publishes.
@@ -1172,8 +1251,12 @@ views.requests = async (page, q, sub) => {
     </form>
     <div id="rq-list"><p class="muted">Loading…</p></div>`;
   onSubmit($('#rq-filter', page), (d) => { location.hash = `#/requests?${new URLSearchParams({ from: d.from, to: d.to })}`; });
-  const rows = await api(`/ride-requests?${new URLSearchParams({ from: q.from || '', to: q.to || '' })}`);
-  $('#rq-list', page).innerHTML = rows.map((r) => requestCard(r)).join('') || '<div class="card empty">No open requests on this route.</div>';
+  const fill = async () => {
+    const rows = await api(`/ride-requests?${new URLSearchParams({ from: q.from || '', to: q.to || '' })}`);
+    setList($('#rq-list', page), rows.map((r) => requestCard(r)).join('') || '<div class="card empty">No open requests on this route.</div>');
+  };
+  await fill();
+  live(page, fill);
 };
 
 views.newRequest = async (page, q) => {
@@ -1204,6 +1287,18 @@ views.newRequest = async (page, q) => {
         <div class="field"><label>Seats</label><select name="seats">${[1, 2, 3, 4].map((n) => `<option ${String(q.seats) === String(n) ? 'selected' : ''}>${n}</option>`).join('')}</select></div>
         <div class="field"><label>Max price per seat (Rs, optional)</label><input name="max_price" type="number" min="0" step="50"></div>
       </div>
+      ${['pickup', 'drop'].map((k) => `
+      <div class="home-opt">
+        <label class="check"><input type="checkbox" name="want_${k}" value="1"><span>🏠 ${k === 'pickup' ? 'Pick me up from home' : 'Drop me at home'}
+          <span class="muted small" style="display:block">Drivers who offer it charge ${money(settings.home_pickup_per_km)}/km from the ${k === 'pickup' ? 'pickup' : 'drop-off'} point (at least ${money(settings.home_pickup_min)})</span></span></label>
+        <div class="home-fields" data-kind="${k}" hidden>
+          <div class="field"><input name="${k}_address" placeholder="House/street and a landmark" maxlength="200"></div>
+          <p class="small muted" style="margin:0">Tap your home on the map${k === 'pickup' ? ' or use your current location' : ''}.</p>
+          <div class="map small" data-home="${k}"></div>
+          ${k === 'pickup' ? '<div class="actions"><button class="btn small ghost" type="button" data-action="locate">📍 Use my current location</button></div>' : ''}
+          <p class="small muted home-note"></p>
+        </div>
+      </div>`).join('')}
       <div class="field"><label>Notes</label><textarea name="notes" maxlength="300" placeholder="e.g. Flexible on time, one suitcase"></textarea></div>
       <button class="btn block" type="submit">Post request</button>
     </form>`;
@@ -1226,7 +1321,7 @@ views.newRequest = async (page, q) => {
   const fill = async (input, select) => {
     const city = input.value.trim();
     const list = city ? await api(`/places?city=${encodeURIComponent(city)}`).catch(() => []) : [];
-    const keep = select.value;
+    const keep = select.value || (select === form.from_place_id && q.pickup ? String(q.pickup) : '');
     select.innerHTML = city
       ? `<option value="">Anywhere in the city</option>${list.map((p) => `<option value="${p.id}">${esc(p.name)}</option>`).join('')}`
       : '<option value="">Choose a city first</option>';
@@ -1244,19 +1339,74 @@ views.newRequest = async (page, q) => {
   drawMap(form.from_place_id);
   drawMap(form.to_place_id);
 
+  // Home pickup/drop: the home is chosen on a map around the chosen point
+  // (or the city's first listed point), with the likely charge shown.
+  const homes = { pickup: null, drop: null };
+  const pickers = {};
+  const anchorFor = (kind) => {
+    const select = kind === 'pickup' ? form.from_place_id : form.to_place_id;
+    const list = lists.get(select) || [];
+    return list.find((p) => String(p.id) === select.value) || list[0] || null;
+  };
+  const homeNote = (kind) => {
+    const note = form.querySelector(`.home-fields[data-kind=${kind}] .home-note`);
+    const h = homes[kind];
+    const at = anchorFor(kind);
+    if (!h) { note.textContent = 'Tap your home on the map.'; return; }
+    if (!at) { note.textContent = ''; return; }
+    const km = Math.round(haversineKm(at.lat, at.lon, h.lat, h.lon) * 1.3 * 10) / 10;
+    const charge = Math.max(settings.home_pickup_min, roundFare(km * settings.home_pickup_per_km));
+    note.innerHTML = `About ${km} km from ${esc(at.name)} · likely <b>+${money(charge)}</b>, paid to the driver`;
+  };
+  const showHomeMap = (kind) => {
+    const el = form.querySelector(`[data-home=${kind}]`);
+    const at = anchorFor(kind);
+    if (!at) { el.hidden = true; form.querySelector(`.home-fields[data-kind=${kind}] .home-note`).textContent = 'Choose the city first.'; return; }
+    el.hidden = false;
+    locationPicker(el, {
+      around: at,
+      radiusKm: settings.home_max_radius_km,
+      value: homes[kind],
+      onPick: (loc) => { homes[kind] = loc; homeNote(kind); },
+    }).then((p) => { pickers[kind] = p; homeNote(kind); }).catch((err) => { console.warn('Map failed:', err); el.hidden = true; });
+  };
+  for (const kind of ['pickup', 'drop']) {
+    const cb = form[`want_${kind}`];
+    cb.addEventListener('change', () => {
+      form.querySelector(`.home-fields[data-kind=${kind}]`).hidden = !cb.checked;
+      if (cb.checked) showHomeMap(kind);
+    });
+    // A different point or city moves the map.
+    (kind === 'pickup' ? form.from_place_id : form.to_place_id).addEventListener('change', () => { if (cb.checked) showHomeMap(kind); });
+  }
+  onClick(form, async (action) => {
+    if (action !== 'locate') return;
+    const loc = parseLocation(await currentLocationLink() || '');
+    if (!loc) throw new Error('Could not get your location. Tap your home on the map instead.');
+    homes.pickup = loc;
+    if (pickers.pickup) pickers.pickup.set(loc);
+    homeNote('pickup');
+  });
+
   onSubmit(form, async (d) => {
-    await api('/ride-requests', {
+    const posted = await api('/ride-requests', {
       method: 'POST',
       body: {
         from_city: d.from_city, to_city: d.to_city, seats: Number(d.seats), notes: d.notes,
         from_place_id: d.from_place_id ? Number(d.from_place_id) : null,
         to_place_id: d.to_place_id ? Number(d.to_place_id) : null,
+        ...Object.fromEntries(['pickup', 'drop'].filter((k) => d[`want_${k}`]).map((k) => {
+          if (!homes[k]) throw new Error(`Tap your home on the ${k === 'pickup' ? 'pickup' : 'drop-off'} map`);
+          return [`home_${k}`, { ...homes[k], address: d[`${k}_address`] }];
+        })),
         max_price: d.max_price ? Number(d.max_price) : null,
         earliest_at: new Date(`${d.date}T${d.from_time}`).toISOString(),
         latest_at: new Date(`${d.date}T${d.to_time}`).toISOString(),
       },
     });
-    toast('Request posted. We’ll notify you when a ride matches.');
+    toast(posted.drivers_notified
+      ? `Request sent to ${posted.drivers_notified} driver${posted.drivers_notified > 1 ? 's' : ''}. We’ll tell you when one offers a ride.`
+      : 'Request posted. We’ll notify you when a ride matches.');
     location.hash = '#/trips?tab=requests';
   });
 };
@@ -1271,9 +1421,10 @@ views.trips = async (page, q) => {
     <div id="list"><p class="muted">Loading…</p></div>`;
   const list = $('#list', page);
 
+  const fill = async () => {
   if (tab === 'booked') {
     const rows = await api('/me/bookings');
-    list.innerHTML = rows.map((b) => `
+    setList(list, rows.map((b) => `
       <a class="card" href="#/ride/${b.ride_id}${b.alight_stop != null ? segmentQuery({ board: b.board_stop, alight: b.alight_stop }) : ''}">
         <div class="ride-top">
           <div>
@@ -1284,10 +1435,10 @@ views.trips = async (page, q) => {
           <div class="price">${money(b.price_per_seat * b.seats + b.home_charge)}<small>total</small></div>
         </div>
         <div class="badges"><span class="badge ${b.ride_status === 'scheduled' ? b.status : b.ride_status}">${b.ride_status === 'scheduled' ? b.status : `ride ${b.ride_status}`}</span></div>
-      </a>`).join('') || '<div class="card empty">No bookings yet. <a href="#/">Find a ride</a></div>';
+      </a>`).join('') || '<div class="card empty">No bookings yet. <a href="#/">Find a ride</a></div>');
   } else if (tab === 'driving') {
     const rides = await api('/me/rides');
-    list.innerHTML = rides.map((r) => `
+    setList(list, rides.map((r) => `
       <a class="card" href="#/ride/${r.id}">
         <div class="ride-top">
           <div>
@@ -1300,11 +1451,14 @@ views.trips = async (page, q) => {
           <span class="badge ${r.status}">${r.status}</span>
           ${r.pending_requests ? `<span class="badge pending">${r.pending_requests} new request(s)</span>` : ''}
         </div>
-      </a>`).join('') || '<div class="card empty">You haven’t offered any rides. <a href="#/offer">Offer one</a></div>';
+      </a>`).join('') || '<div class="card empty">You haven’t offered any rides. <a href="#/offer">Offer one</a></div>');
   } else {
     const rows = await api('/me/ride-requests');
-    list.innerHTML = `<a class="btn ghost block" href="#/requests/new" style="margin-bottom:12px">🙋 New ride request</a>`
-      + (rows.map((r) => requestCard(r, { mine: true })).join('') || '<div class="card empty">No ride requests yet.</div>');
+    setList(list, `<a class="btn ghost block" href="#/requests/new" style="margin-bottom:12px">🙋 New ride request</a>`
+      + (rows.map((r) => requestCard(r, { mine: true })).join('') || '<div class="card empty">No ride requests yet.</div>'));
+  }
+  };
+  if (tab === 'requests') {
     onClick(list, async (action, data) => {
       if (action === 'close-request') {
         await api(`/ride-requests/${data.id}/close`, { method: 'POST' });
@@ -1312,6 +1466,8 @@ views.trips = async (page, q) => {
       }
     });
   }
+  await fill();
+  live(page, fill);
 };
 
 views.inbox = async (page, q) => {
@@ -1326,30 +1482,38 @@ views.inbox = async (page, q) => {
     <div id="inbox-list"><p class="muted">Loading…</p></div>`;
   const list = $('#inbox-list', page);
   if (tab === 'alerts') {
-    const rows = await api('/notifications');
-    list.innerHTML = pushCard(await pushState()) + rows.map((n) => `
-      <a class="card notif ${n.read_at ? '' : 'unread'}" href="${n.link ? `#${esc(n.link)}` : '#/inbox'}">
-        <div class="ride-top"><b>${esc(n.title)}</b><span class="muted small">${timeAgo(n.created_at)}</span></div>
-        ${n.body ? `<div class="small muted">${esc(n.body)}</div>` : ''}
-      </a>`).join('') || '<div class="card empty">No notifications yet.</div>';
     onClick(list, async (action) => {
       if (action !== 'push-on') return;
       await enablePush();
       toast('Notifications are on for this device');
       render();
     });
+    const fill = async () => {
+    const rows = await api('/notifications');
+    setList(list, pushCard(await pushState()) + rows.map((n) => `
+      <a class="card notif ${n.read_at ? '' : 'unread'}" href="${n.link ? `#${esc(n.link)}` : '#/inbox'}">
+        <div class="ride-top"><b>${esc(n.title)}</b><span class="muted small">${timeAgo(n.created_at)}</span></div>
+        ${n.body ? `<div class="small muted">${esc(n.body)}</div>` : ''}
+      </a>`).join('') || '<div class="card empty">No notifications yet.</div>');
     if (rows.some((n) => !n.read_at)) {
       await api('/notifications/read-all', { method: 'POST' });
       refreshUnread();
     }
+    };
+    await fill();
+    live(page, fill);
   } else {
+    const fill = async () => {
     const rows = await api('/me/conversations');
-    list.innerHTML = rows.map((c) => `
+    setList(list, rows.map((c) => `
       <a class="card notif ${c.unread ? 'unread' : ''}" href="#/chat/${c.booking_id}">
         <div class="ride-top"><b>${esc(c.other_name)}</b><span class="muted small">${c.last_at ? timeAgo(c.last_at) : ''}</span></div>
         <div class="small muted">${esc(c.from_city)} → ${esc(c.to_city)} · ${when(c.departure_at)} · you’re the ${c.my_role}</div>
         <div class="small">${c.last_message ? esc(c.last_message) : '<span class="muted">No messages yet — say salaam 👋</span>'}${c.unread ? ` <span class="badge pending">${c.unread} new</span>` : ''}</div>
-      </a>`).join('') || '<div class="card empty">No conversations yet. Chats open once you book a ride or receive a booking.</div>';
+      </a>`).join('') || '<div class="card empty">No conversations yet. Chats open once you book a ride or receive a booking.</div>');
+    };
+    await fill();
+    live(page, fill);
   }
 };
 
@@ -2355,14 +2519,25 @@ async function refreshUnread() {
   if (!me) return;
   try {
     const next = await api('/notifications/unread-count');
+    const news = next.notifications > unread.notifications || next.messages > unread.messages;
     unread = next;
     renderNav(parseHash().name);
+    // Something new happened: bring the page on screen up to date too.
+    if (news) liveHooks.forEach((run) => run());
   } catch { /* offline; try again later */ }
 }
+
+// Back in the app (or tab) after a while: catch up straight away.
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState !== 'visible') return;
+  refreshUnread();
+  liveHooks.forEach((run) => run());
+});
 
 async function render() {
   pageTimers.forEach(clearInterval);
   pageTimers = [];
+  liveHooks = [];
   const { name, id, query } = parseHash();
   const view = $('#view');
   // A fresh element per render so listeners from the previous page are dropped.
@@ -2410,5 +2585,5 @@ ready.then(() => {
     pushSubscription().then((sub) => sub && api('/me/push', { method: 'POST', body: { subscription: sub.toJSON() } })).catch(() => {});
   }
   refreshUnread();
-  setInterval(refreshUnread, 30000);
+  setInterval(refreshUnread, 15000);
 });

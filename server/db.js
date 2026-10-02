@@ -290,6 +290,8 @@ const ADDED_COLUMNS = {
   ride_requests: {
     from_place_id: 'INTEGER REFERENCES places(id)',
     to_place_id: 'INTEGER REFERENCES places(id)',
+    home_pickup: 'TEXT', // JSON { lat, lon, address } when the passenger wants home pickup
+    home_drop: 'TEXT',
   },
   users: {
     role: `TEXT NOT NULL DEFAULT 'user'`,

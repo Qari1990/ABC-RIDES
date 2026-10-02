@@ -480,3 +480,5 @@ table.earn th { color: var(--muted); font-weight: 650; font-size: .75rem; text-t
 @media (prefers-color-scheme: dark) {
   .map .leaflet-tile-pane { filter: invert(1) hue-rotate(180deg) brightness(.95) contrast(.9); }
 }
+
+.near-field { margin: 4px 0 16px; }
