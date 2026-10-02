@@ -65,13 +65,40 @@ function placePopup(p, extra = '') {
 /**
  * A ride's stops in order. The part between board and alight (the passenger's
  * trip) is drawn solid; homes are optional home pickup/drop points.
- * Lines join the stops in order; they are not the exact road.
+ * Lines follow the roads when the routing service answers, else join the stops directly.
  */
+// Road shapes per leg, fetched once per page load for each set of stops.
+const shapeCache = new Map();
+function roadLegs(stops) {
+  const key = stops.map((s) => `${(+s.lat).toFixed(4)},${(+s.lon).toFixed(4)}`).join(';');
+  if (!shapeCache.has(key)) {
+    shapeCache.set(key, fetch(`/api/route-shape?points=${encodeURIComponent(key)}`)
+      .then((r) => (r.ok ? r.json() : { legs: [] }))
+      .then((d) => d.legs || [])
+      .catch(() => []));
+  }
+  return shapeCache.get(key);
+}
+
 async function routeMap(el, stops, { board = 0, alight = stops.length - 1, homes = [], extra = [], onExtra } = {}) {
   const { L, map } = await createMap(el);
   const pts = stops.map((s) => [s.lat, s.lon]);
-  L.polyline(pts, { color: '#94a3b8', weight: 3, dashArray: '6 8' }).addTo(map);
-  L.polyline(pts.slice(board, alight + 1), { color: '#0b7a5e', weight: 5, opacity: 0.9 }).addTo(map);
+  // Straight lines first; replaced by the actual roads once they arrive.
+  const lines = L.layerGroup().addTo(map);
+  const drawLegs = (legs) => {
+    lines.clearLayers();
+    for (let i = 1; i < pts.length; i += 1) {
+      const road = legs[i - 1];
+      const mine = i > board && i <= alight;
+      L.polyline(road || [pts[i - 1], pts[i]], mine
+        ? { color: '#0b7a5e', weight: 5, opacity: 0.9, dashArray: road ? null : '8 8' }
+        : { color: '#94a3b8', weight: 4, opacity: 0.9, dashArray: road ? null : '6 8' }).addTo(lines);
+    }
+  };
+  drawLegs([]);
+  if (pts.length >= 2 && pts.length <= 12) {
+    roadLegs(stops).then((legs) => { if (el._abcMap === map && legs.some(Boolean)) drawLegs(legs); });
+  }
   stops.forEach((s, i) => {
     const kind = i === 0 ? 'start' : i === stops.length - 1 ? 'end' : '';
     const off = i < board || i > alight ? 'off' : '';

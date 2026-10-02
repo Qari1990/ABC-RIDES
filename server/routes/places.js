@@ -1,7 +1,8 @@
 const express = require('express');
 const { requireAdmin } = require('../auth');
+const { rateLimiter } = require('../security');
 const { HttpError, bad, str } = require('../errors');
-const { CITIES, canonicalCity, placeKm, suggestStops, minutesFor, refreshFromOsrm } = require('../geo');
+const { CITIES, canonicalCity, placeKm, suggestStops, minutesFor, refreshFromOsrm, roadShape } = require('../geo');
 
 function coord(value, field, min, max) {
   const n = Number(value);
@@ -39,6 +40,25 @@ module.exports = function placesRouter(db) {
       suggested_stops: suggestStops(db, stops[0], stops[stops.length - 1], activePlaces().filter((p) => !chosen.has(p.id)))
         .map(({ id, city, name, lat, lon, km: along }) => ({ id, city, name, lat, lon, km: along })),
     });
+  });
+
+  // Road shapes for drawing a route on a map, one leg per pair of stops.
+  //   GET /route-shape?points=lat,lon;lat,lon;...   (2 to 12 points)
+  // → { legs: [[[lat, lon], ...] or null, ...] }  (null: draw a straight line)
+  const shapeLimit = rateLimiter({ windowMs: 10 * 60 * 1000, max: 120, message: 'Too many map requests, please wait a moment' });
+  router.get('/route-shape', async (req, res) => {
+    shapeLimit.check(req.ip);
+    shapeLimit.hit(req.ip);
+    const pts = String(req.query.points || '').split(';').filter(Boolean).map((p) => p.split(',').map(Number));
+    const valid = pts.length >= 2 && pts.length <= 12
+      && pts.every(([lat, lon]) => Number.isFinite(lat) && Number.isFinite(lon) && Math.abs(lat) <= 90 && Math.abs(lon) <= 180);
+    if (!valid) throw bad('Give 2 to 12 points as lat,lon;lat,lon');
+    const legs = [];
+    for (let i = 1; i < pts.length; i += 1) {
+      legs.push(await roadShape(db, { lat: pts[i - 1][0], lon: pts[i - 1][1] }, { lat: pts[i][0], lon: pts[i][1] }));
+    }
+    res.set('cache-control', 'public, max-age=86400');
+    res.json({ legs });
   });
 
   // ---- Admin: manage places and distances ----------------------------------

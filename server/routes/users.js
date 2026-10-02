@@ -5,6 +5,7 @@ const { rateLimiter } = require('../security');
 const { normalizePhone } = require('../sms');
 const { getSettings } = require('../settings');
 const { freeConfirmationsLeft } = require('../wallet');
+const { vapidKeys, saveSubscription } = require('../push');
 
 const TRAVELER_TYPES = ['professional', 'student', 'traveler'];
 const GENDERS = ['male', 'female', 'other'];
@@ -161,6 +162,19 @@ module.exports = function usersRouter(db) {
     db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(hashPassword(b.new_password), req.user.id);
     // Sign out every other device.
     db.prepare('DELETE FROM sessions WHERE user_id = ? AND token != ?').run(req.user.id, req.token);
+    res.status(204).end();
+  });
+
+  // ---- Push notifications (Web Push) ----
+  router.get('/push/key', (_req, res) => res.json({ key: vapidKeys(db).publicKey }));
+
+  router.post('/me/push', requireUser, (req, res) => {
+    if (!saveSubscription(db, req.user.id, req.body && req.body.subscription)) throw bad('Invalid push subscription');
+    res.status(204).end();
+  });
+
+  router.delete('/me/push', requireUser, (req, res) => {
+    db.prepare('DELETE FROM push_subscriptions WHERE user_id = ? AND endpoint = ?').run(req.user.id, String((req.body || {}).endpoint || ''));
     res.status(204).end();
   });
 

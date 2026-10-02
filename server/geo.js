@@ -194,7 +194,34 @@ async function refreshFromOsrm(db, baseUrl = process.env.ROUTING_URL || 'https:/
   return count;
 }
 
+// The road between two points as [[lat, lon], ...], from the routing service
+// (OSRM's free public server by default), cached forever in route_shapes.
+// Returns null when the service can't be reached; maps then draw a straight line.
+const SHAPE_FAILURES = new Map(); // pair → time of last failure, to avoid hammering
+async function roadShape(db, a, b, baseUrl = process.env.ROUTING_URL || 'https://router.project-osrm.org') {
+  const r4 = (n) => Number(n).toFixed(4);
+  const pair = `${r4(a.lat)},${r4(a.lon)}|${r4(b.lat)},${r4(b.lon)}`;
+  const hit = db.prepare('SELECT points FROM route_shapes WHERE pair = ?').get(pair);
+  if (hit) return JSON.parse(hit.points);
+  if (Date.now() - (SHAPE_FAILURES.get(pair) || 0) < 10 * 60 * 1000) return null;
+  try {
+    const url = `${baseUrl.replace(/\/$/, '')}/route/v1/driving/${r4(a.lon)},${r4(a.lat)};${r4(b.lon)},${r4(b.lat)}?overview=simplified&geometries=geojson`;
+    const res = await fetch(url, { headers: { 'user-agent': 'ABC-Rides/1.0' }, signal: AbortSignal.timeout(8000) });
+    if (!res.ok) throw new Error(`Routing service answered ${res.status}`);
+    const data = await res.json();
+    const coords = data.routes && data.routes[0] && data.routes[0].geometry && data.routes[0].geometry.coordinates;
+    if (!Array.isArray(coords) || coords.length < 2) throw new Error('No route found');
+    const points = coords.map(([lon, lat]) => [Number(lat.toFixed(5)), Number(lon.toFixed(5))]);
+    db.prepare('INSERT OR REPLACE INTO route_shapes (pair, points) VALUES (?, ?)').run(pair, JSON.stringify(points));
+    return points;
+  } catch {
+    SHAPE_FAILURES.set(pair, Date.now());
+    return null;
+  }
+}
+
 module.exports = {
+  roadShape,
   CITIES, CITY_CENTRES, canonicalCity, haversineKm, cityRoadKm, placeKm, minutesFor, estimateRoute, suggestStops,
   refreshFromOsrm, ROAD_FACTOR,
 };

@@ -213,3 +213,29 @@ test('admin can load real road distances from a map routing service', async () =
   assert.equal((await call('POST', '/admin/distances/refresh', { token: admin.token })).status, 502);
   delete process.env.ROUTING_URL;
 });
+
+test('road shapes for maps come from the routing service once, then from the cache', async () => {
+  const http = require('node:http');
+  let calls = 0;
+  const osrm = http.createServer((req, res) => {
+    calls += 1;
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify({ code: 'Ok', routes: [{ geometry: { coordinates: [[74.24, 31.47], [74.0, 32.0], [73.08, 33.66]] } }] }));
+  }).listen(0);
+  await new Promise((r) => osrm.once('listening', r));
+  process.env.ROUTING_URL = `http://127.0.0.1:${osrm.address().port}`;
+  const srv = await startServer();
+  try {
+    const q = '/route-shape?points=' + encodeURIComponent('31.4705,74.2407;33.664,73.082');
+    const first = await srv.call('GET', q);
+    assert.equal(first.status, 200);
+    assert.deepEqual(first.body.legs[0][1], [32, 74]);
+    await srv.call('GET', q);
+    assert.equal(calls, 1, 'second request served from the cache');
+    assert.equal((await srv.call('GET', '/route-shape?points=1,2')).status, 400);
+  } finally {
+    delete process.env.ROUTING_URL;
+    srv.close();
+    osrm.close();
+  }
+});

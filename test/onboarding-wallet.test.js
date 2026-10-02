@@ -457,3 +457,34 @@ test('admin can set a temporary password', async () => {
   assert.ok(res.body.password.length >= 8);
   assert.equal((await call('POST', '/auth/login', { body: { email: 'locked-out@test.pk', password: res.body.password } })).status, 200);
 });
+
+test('forgot password by email (Brevo)', async () => {
+  const u = await register({ email: 'mailer@test.pk' });
+  assert.equal((await call('GET', '/auth/reset/options')).body.email, false);
+  assert.equal((await call('POST', '/auth/reset/send', { body: { login: 'mailer@test.pk' } })).body.code, 'reset_unavailable');
+
+  const http = require('node:http');
+  let sent = null;
+  const brevo = http.createServer((req, res) => {
+    let body = '';
+    req.on('data', (c) => { body += c; });
+    req.on('end', () => { sent = { key: req.headers['api-key'], ...JSON.parse(body) }; res.writeHead(201); res.end('{}'); });
+  }).listen(0);
+  await new Promise((r) => brevo.once('listening', r));
+  Object.assign(process.env, { BREVO_API_KEY: 'test-key', EMAIL_FROM: 'abcrides@test.pk', EMAIL_API_URL: `http://127.0.0.1:${brevo.address().port}/` });
+  try {
+    assert.equal((await call('GET', '/auth/reset/options')).body.email, true);
+    assert.equal((await call('POST', '/auth/reset/send', { body: { login: 'nobody@test.pk' } })).status, 200);
+    assert.equal(sent, null, 'no email for unknown addresses');
+    assert.equal((await call('POST', '/auth/reset/send', { body: { login: 'Mailer@Test.pk' } })).status, 200);
+    assert.equal(sent.key, 'test-key');
+    assert.deepEqual(sent.to, [{ email: 'mailer@test.pk' }]);
+    const code = sent.textContent.match(/\d{6}/)[0];
+    assert.equal((await call('POST', '/auth/reset/confirm', { body: { login: 'mailer@test.pk', code, new_password: 'emailreset1' } })).status, 204);
+    assert.equal((await call('GET', '/me', { token: u.token })).status, 401);
+    assert.equal((await call('POST', '/auth/login', { body: { email: 'mailer@test.pk', password: 'emailreset1' } })).status, 200);
+  } finally {
+    for (const k of ['BREVO_API_KEY', 'EMAIL_FROM', 'EMAIL_API_URL']) delete process.env[k];
+    brevo.close();
+  }
+});

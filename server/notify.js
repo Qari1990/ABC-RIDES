@@ -1,7 +1,13 @@
 // In-app notifications. The app polls /api/notifications/unread-count, so a
 // row here is all it takes to alert someone.
+// Users who turned on push notifications also get it on their phone/computer.
 function notify(db, userId, title, body = null, link = null) {
   db.prepare('INSERT INTO notifications (user_id, title, body, link) VALUES (?, ?, ?, ?)').run(userId, title, body, link);
+  try {
+    require('./push').sendPush(db, userId, { title, body, link });
+  } catch (err) {
+    console.warn(`Push skipped: ${err.message}`);
+  }
 }
 
 const route = (r) => `${r.from_city} → ${r.to_city}`;

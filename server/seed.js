@@ -121,6 +121,7 @@ function removeDemoData(db) {
       DELETE FROM phone_codes WHERE user_id IN ${who};
       DELETE FROM reset_codes WHERE user_id IN ${who};
       DELETE FROM topup_requests WHERE user_id IN ${who};
+      DELETE FROM push_subscriptions WHERE user_id IN ${who};
       DELETE FROM sessions WHERE user_id IN ${who};
       DELETE FROM users WHERE id IN ${who};
     `);

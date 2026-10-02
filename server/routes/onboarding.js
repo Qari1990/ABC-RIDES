@@ -8,6 +8,7 @@ const { transaction } = require('../db');
 const { HttpError, bad, str, int } = require('../errors');
 const { notify } = require('../notify');
 const { smsConfigured, sendSms, normalizePhone } = require('../sms');
+const { emailConfigured, sendEmail } = require('../email');
 const { decodeImage, saveDocuments } = require('../uploads');
 const { selfUser } = require('./users');
 
@@ -160,27 +161,41 @@ module.exports = function onboardingRouter(db, { uploadDir }) {
     res.json(selfUser(db, reload(u.id)));
   });
 
-  // ---- Forgot password (code by SMS) ----------------------------------------
+  // ---- Forgot password (code by email or SMS) -------------------------------
   //
-  // Works for accounts with a verified phone. Without an SMS provider the code
-  // could only be shown on screen, which would let anyone take over any
-  // account, so reset is switched off and an admin sets a temporary password.
+  // By email (free with Brevo) for any account, or by SMS to a verified phone.
+  // The code is never shown on screen (that would let anyone take over any
+  // account): with neither service set up, an admin sets a temporary password.
   const resetLimit = rateLimiter({ windowMs: 60 * 60 * 1000, max: 10, message: 'Too many reset attempts. Please try again in an hour.' });
+
+  // Who is resetting: an email address (code by email) or a verified phone
+  // (code by SMS). Returns { channel, user } (user may be null).
+  const resetTarget = (body) => {
+    const login = str(body.login ?? body.email ?? body.phone, 'Email or phone', { required: true, max: 120 }).trim();
+    if (login.includes('@')) {
+      return { channel: 'email', to: login.toLowerCase(), user: db.prepare('SELECT * FROM users WHERE email = ?').get(login.toLowerCase()) || null };
+    }
+    const phone = normalizePhone(login);
+    return { channel: 'sms', to: phone, user: (phone && db.prepare('SELECT * FROM users WHERE verified_phone = ?').get(phone)) || null };
+  };
+
+  // Which ways of resetting are switched on, so the app can say so up front.
+  router.get('/auth/reset/options', (_req, res) => res.json({ email: emailConfigured(), sms: smsConfigured() }));
 
   router.post('/auth/reset/send', async (req, res) => {
     resetLimit.check(`send|${req.ip}`);
     resetLimit.hit(`send|${req.ip}`);
-    if (!smsConfigured()) {
-      const err = new HttpError(503, 'Password reset by SMS is not switched on yet. Please contact ABC Rides support to reset your password.');
+    const { channel, to, user: u } = resetTarget(req.body || {});
+    if (channel === 'email' ? !emailConfigured() : !smsConfigured()) {
+      const other = channel === 'email' ? smsConfigured() && 'your verified phone number' : emailConfigured() && 'your email address';
+      const err = new HttpError(503, `Password reset by ${channel === 'email' ? 'email' : 'SMS'} is not switched on yet. ${other ? `Try ${other} instead, or contact` : 'Please contact'} ABC Rides support to reset your password.`);
       err.code = 'reset_unavailable';
       err.expected = true; // a known state, not a crash: show the message, don't log it
       throw err;
     }
-    const phone = normalizePhone(str((req.body || {}).phone, 'Phone', { required: true, max: 30 }));
-    const u = phone && db.prepare('SELECT * FROM users WHERE verified_phone = ? AND suspended = 0').get(phone);
-    // Same answer whether or not the number has an account, so numbers can't be probed.
-    const reply = { sent: true, message: 'If this number has an ABC Rides account, a code is on its way.' };
-    if (!u) return res.json(reply);
+    // Same answer whether or not there is an account, so addresses can't be probed.
+    const reply = { sent: true, message: `If this ${channel === 'email' ? 'email' : 'number'} has an ABC Rides account, a code is on its way.` };
+    if (!u || u.suspended) return res.json(reply);
     const prev = db.prepare('SELECT * FROM reset_codes WHERE user_id = ?').get(u.id);
     if (prev && Date.now() - new Date(prev.sent_at) < RESEND_AFTER_MS) return res.json(reply);
     const code = String(crypto.randomInt(100000, 1000000));
@@ -188,10 +203,15 @@ module.exports = function onboardingRouter(db, { uploadDir }) {
       ON CONFLICT(user_id) DO UPDATE SET code_hash = excluded.code_hash, expires_at = excluded.expires_at, attempts = 0, sent_at = excluded.sent_at`)
       .run(u.id, hashCode(u.id, code), new Date(Date.now() + CODE_TTL_MS).toISOString(), new Date().toISOString());
     try {
-      await sendSms(`+${phone}`, `Your ABC Rides password reset code is ${code}. If you didn't ask for it, ignore this message.`);
+      if (channel === 'email') {
+        await sendEmail(to, `Your ABC Rides code: ${code}`,
+          `Assalam-o-Alaikum ${u.name},\n\nYour ABC Rides password reset code is ${code}. It expires in 10 minutes.\n\nIf you didn't ask to reset your password, ignore this email; your account is safe.\n\nABC Rides`);
+      } else {
+        await sendSms(`+${to}`, `Your ABC Rides password reset code is ${code}. If you didn't ask for it, ignore this message.`);
+      }
     } catch (err) {
-      console.error('SMS failed:', err.message);
-      throw Object.assign(new HttpError(502, 'Could not send the SMS right now. Please try again shortly.'), { expected: true });
+      console.error(`${channel} failed:`, err.message);
+      throw Object.assign(new HttpError(502, `Could not send the ${channel === 'email' ? 'email' : 'SMS'} right now. Please try again shortly.`), { expected: true });
     }
     res.json(reply);
   });
@@ -199,9 +219,8 @@ module.exports = function onboardingRouter(db, { uploadDir }) {
   router.post('/auth/reset/confirm', (req, res) => {
     resetLimit.check(`confirm|${req.ip}`);
     const b = req.body || {};
-    const phone = normalizePhone(str(b.phone, 'Phone', { required: true, max: 30 }));
+    const { user: u } = resetTarget(b);
     if (typeof b.new_password !== 'string' || b.new_password.length < 8) throw bad('New password must be at least 8 characters');
-    const u = phone && db.prepare('SELECT * FROM users WHERE verified_phone = ?').get(phone);
     const row = u && db.prepare('SELECT * FROM reset_codes WHERE user_id = ?').get(u.id);
     const wrong = () => { resetLimit.hit(`confirm|${req.ip}`); return bad('The code is wrong or has expired. Please request a new one.'); };
     if (!row || new Date(row.expires_at) < new Date() || row.attempts >= MAX_ATTEMPTS) throw wrong();
@@ -243,7 +262,7 @@ module.exports = function onboardingRouter(db, { uploadDir }) {
         organization = NULL, emergency_name = NULL, emergency_phone = NULL, cnic = NULL, verified_phone = NULL,
         phone_verified = 0, licence_number = NULL, suspended = 1, role = 'user' WHERE id = ?`)
         .run(`deleted-${u.id}@deleted.invalid`, crypto.randomBytes(32).toString('hex'), u.id);
-      for (const t of ['documents', 'vehicles', 'phone_codes', 'sessions', 'notifications', 'ride_requests']) {
+      for (const t of ['documents', 'vehicles', 'phone_codes', 'reset_codes', 'push_subscriptions', 'sessions', 'notifications', 'ride_requests']) {
         const col = t === 'ride_requests' ? 'passenger_id' : 'user_id';
         db.prepare(`DELETE FROM ${t} WHERE ${col} = ?`).run(u.id);
       }

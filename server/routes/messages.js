@@ -1,6 +1,7 @@
 const express = require('express');
 const { requireUser } = require('../auth');
 const { HttpError, bad, str } = require('../errors');
+const { sendPush } = require('../push');
 
 // Chat between a driver and a passenger, one thread per booking.
 module.exports = function messagesRouter(db) {
@@ -35,6 +36,12 @@ module.exports = function messagesRouter(db) {
     const body = str(req.body && req.body.body, 'Message', { required: true, max: 1000 });
     const { lastInsertRowid } = db.prepare('INSERT INTO messages (booking_id, sender_id, body) VALUES (?, ?, ?)')
       .run(t.id, req.user.id, body);
+    // Chat messages go to the inbox badge, and to the phone if push is on.
+    try {
+      sendPush(db, t.other.id, { title: `Message from ${req.user.name}`, body: body.slice(0, 120), link: `/chat/${t.id}` });
+    } catch (err) {
+      console.warn(`Push skipped: ${err.message}`);
+    }
     res.status(201).json(db.prepare('SELECT id, sender_id, body, created_at FROM messages WHERE id = ?').get(lastInsertRowid));
   });
 

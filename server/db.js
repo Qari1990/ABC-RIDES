@@ -208,6 +208,23 @@ CREATE TABLE IF NOT EXISTS route_distances (
   updated_at  TEXT NOT NULL
 );
 
+-- Browsers that asked for push notifications (Web Push).
+CREATE TABLE IF NOT EXISTS push_subscriptions (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  endpoint    TEXT NOT NULL UNIQUE,
+  p256dh      TEXT NOT NULL,
+  auth        TEXT NOT NULL,
+  created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+-- Road shapes between two points, fetched once from the routing service.
+CREATE TABLE IF NOT EXISTS route_shapes (
+  pair        TEXT PRIMARY KEY,   -- "lat,lon|lat,lon" rounded to 4 decimals
+  points      TEXT NOT NULL,      -- JSON [[lat, lon], ...]
+  created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
 -- Errors from phones/browsers and the server, shown to admins.
 CREATE TABLE IF NOT EXISTS error_log (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,

@@ -1327,11 +1327,17 @@ views.inbox = async (page, q) => {
   const list = $('#inbox-list', page);
   if (tab === 'alerts') {
     const rows = await api('/notifications');
-    list.innerHTML = rows.map((n) => `
+    list.innerHTML = pushCard(await pushState()) + rows.map((n) => `
       <a class="card notif ${n.read_at ? '' : 'unread'}" href="${n.link ? `#${esc(n.link)}` : '#/inbox'}">
         <div class="ride-top"><b>${esc(n.title)}</b><span class="muted small">${timeAgo(n.created_at)}</span></div>
         ${n.body ? `<div class="small muted">${esc(n.body)}</div>` : ''}
       </a>`).join('') || '<div class="card empty">No notifications yet.</div>';
+    onClick(list, async (action) => {
+      if (action !== 'push-on') return;
+      await enablePush();
+      toast('Notifications are on for this device');
+      render();
+    });
     if (rows.some((n) => !n.read_at)) {
       await api('/notifications/read-all', { method: 'POST' });
       refreshUnread();
@@ -1439,8 +1445,8 @@ views.forgot = async (page) => {
   page.innerHTML = `
     <h1>Reset your password</h1>
     <form id="fp-send" class="card">
-      <p class="muted small">Enter the phone number you verified on ABC Rides. We’ll text you a 6-digit code.</p>
-      <div class="field"><label for="fpp">Phone</label><input id="fpp" name="phone" type="tel" placeholder="03xx xxxxxxx" required></div>
+      <p class="muted small">Enter your account’s email (or your verified phone). We’ll send you a 6-digit code.</p>
+      <div class="field"><label for="fpp">Email or phone</label><input id="fpp" name="login" type="text" inputmode="email" autocomplete="username" placeholder="you@example.com" required></div>
       <button class="btn block" type="submit">Send code</button>
     </form>
     <form id="fp-confirm" class="card" hidden>
@@ -1450,11 +1456,11 @@ views.forgot = async (page) => {
     </form>
     <div id="fp-help" class="card warn small" hidden></div>
     <p class="muted"><a href="#/login">Back to log in</a></p>`;
-  let phone = '';
+  let login = '';
   onSubmit($('#fp-send', page), async (d) => {
     try {
       const res = await api('/auth/reset/send', { method: 'POST', body: d });
-      phone = d.phone;
+      login = d.login;
       toast(res.message);
       $('#fp-confirm', page).hidden = false;
       $('#fpc', page).focus();
@@ -1466,7 +1472,7 @@ views.forgot = async (page) => {
     }
   });
   onSubmit($('#fp-confirm', page), async (d) => {
-    await api('/auth/reset/confirm', { method: 'POST', body: { ...d, phone } });
+    await api('/auth/reset/confirm', { method: 'POST', body: { ...d, login } });
     toast('Password changed. Log in with your new password.');
     location.hash = '#/login';
   });
@@ -1781,6 +1787,7 @@ views.profile = async (page) => {
         <button class="btn" type="submit">Update password</button>
       </form>
     </details>
+    <div id="push-row"></div>
     <details class="card">
       <summary><b>Delete my account</b></summary>
       <form id="delete-account" style="margin-top:12px">
@@ -1804,6 +1811,13 @@ views.profile = async (page) => {
     form.reset();
     toast('Password changed. Other devices were signed out.');
   });
+  pushState().then((state) => {
+    const row = $('#push-row', page);
+    if (!row || state === 'unsupported') return;
+    row.innerHTML = state === 'on'
+      ? '<div class="card list-row"><span>🔔 Notifications are on for this device</span><button class="btn small ghost" data-action="push-off">Turn off</button></div>'
+      : pushCard(state);
+  });
   onSubmit($('#delete-account', page), async (d) => {
     if (!confirm('Delete your ABC Rides account? This cannot be undone.')) return;
     await api('/me', { method: 'DELETE', body: d });
@@ -1813,7 +1827,11 @@ views.profile = async (page) => {
   });
   onClick(page, async (action) => {
     if (action === 'server') nativeApp.changeServer();
+    if (action === 'push-on') { await enablePush(); toast('Notifications are on for this device'); render(); }
+    if (action === 'push-off') { await disablePush(); toast('Notifications turned off'); render(); }
     if (action === 'logout') {
+      // This device should stop getting this account's alerts.
+      await disablePush().catch(() => {});
       await api('/auth/logout', { method: 'POST' }).catch(() => {});
       store.token = null; me = null; unread = { notifications: 0, messages: 0 };
       location.hash = '#/';
@@ -2168,6 +2186,45 @@ views.admin = async (page, q) => {
   }
 };
 
+// ---- Push notifications (Web Push; browsers and home-screen web apps) -------
+const pushSupported = () => !nativeApp && 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+
+async function pushSubscription() {
+  if (!pushSupported()) return null;
+  const reg = await navigator.serviceWorker.getRegistration();
+  return reg ? reg.pushManager.getSubscription() : null;
+}
+
+/** 'unsupported' | 'blocked' | 'on' | 'off' */
+async function pushState() {
+  if (!pushSupported()) return 'unsupported';
+  if (Notification.permission === 'denied') return 'blocked';
+  return (await pushSubscription().catch(() => null)) ? 'on' : 'off';
+}
+
+async function enablePush() {
+  const reg = await navigator.serviceWorker.register('sw.js');
+  await navigator.serviceWorker.ready;
+  if (await Notification.requestPermission() !== 'granted') throw new Error('Notifications are blocked. Allow them for this site in your browser settings.');
+  const { key } = await api('/push/key');
+  const raw = atob(key.replace(/-/g, '+').replace(/_/g, '/') + '='.repeat((4 - (key.length % 4)) % 4));
+  const sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: Uint8Array.from(raw, (c) => c.charCodeAt(0)) });
+  await api('/me/push', { method: 'POST', body: { subscription: sub.toJSON() } });
+}
+
+async function disablePush() {
+  const sub = await pushSubscription();
+  if (!sub) return;
+  await api('/me/push', { method: 'DELETE', body: { endpoint: sub.endpoint } }).catch(() => {});
+  await sub.unsubscribe();
+}
+
+function pushCard(state) {
+  if (state === 'off') return `<div class="card push-card"><b>🔔 Get alerts on this phone</b><p class="small muted">Know the moment a driver accepts, a passenger books or someone messages you, even when ABC Rides is closed.</p><button class="btn small" data-action="push-on">Turn on notifications</button></div>`;
+  if (state === 'blocked') return '<p class="small muted">🔔 Notifications are blocked for this site. Allow them in your browser’s site settings to get alerts.</p>';
+  return '';
+}
+
 // ---- Error reporting --------------------------------------------------------
 // Unexpected errors on the phone are sent to the server so admins can see them
 // (Admin → Errors). A few per page load at most, without repeats.
@@ -2308,6 +2365,7 @@ window.addEventListener('hashchange', async () => {
 
 ready.then(() => {
   render();
+  if (me) pushSubscription().then((sub) => sub && api('/me/push', { method: 'POST', body: { subscription: sub.toJSON() } })).catch(() => {});
   refreshUnread();
   setInterval(refreshUnread, 30000);
 });

@@ -224,3 +224,36 @@ test('app errors are logged for admins, rate limited, and server errors too', as
   // Only admins can read them.
   assert.equal((await call('GET', '/admin/errors', { token })).status, 403);
 });
+
+test('web push: key, subscribe, alerts and chat messages are pushed', async () => {
+  const webpush = require('web-push');
+  const sent = [];
+  const original = webpush.sendNotification;
+  webpush.sendNotification = async (sub, payload) => { sent.push({ endpoint: sub.endpoint, ...JSON.parse(payload) }); };
+  try {
+    const key = await call('GET', '/push/key');
+    assert.equal(key.status, 200);
+    assert.ok(key.body.key.length > 60, 'a VAPID public key');
+    assert.equal((await call('GET', '/push/key')).body.key, key.body.key, 'the same key every time');
+
+    const driver = await register();
+    const rider = await register({ traveler_type: 'traveler' });
+    const subscription = { endpoint: 'https://push.example.test/abc', keys: { p256dh: 'BKey', auth: 'auth' } };
+    assert.equal((await call('POST', '/me/push', { token: driver.token, body: { subscription: { endpoint: 'http://insecure' } } })).status, 400);
+    assert.equal((await call('POST', '/me/push', { token: driver.token, body: { subscription } })).status, 204);
+
+    const [ride] = (await call('POST', '/rides', { token: driver.token, body: rideBody() })).body;
+    const booking = (await call('POST', `/rides/${ride.id}/bookings`, { token: rider.token, body: { seats: 1 } })).body;
+    assert.ok(sent.some((p) => p.endpoint === subscription.endpoint && /request/i.test(p.title)), JSON.stringify(sent));
+
+    await call('POST', `/bookings/${booking.id}/messages`, { token: rider.token, body: { body: 'Salaam, is the seat free?' } });
+    const msg = sent.at(-1);
+    assert.match(msg.title, /Message from/);
+    assert.equal(msg.link, `/chat/${booking.id}`);
+
+    assert.equal((await call('DELETE', '/me/push', { token: driver.token, body: { endpoint: subscription.endpoint } })).status, 204);
+    assert.equal(db.prepare('SELECT COUNT(*) n FROM push_subscriptions').get().n, 0);
+  } finally {
+    webpush.sendNotification = original;
+  }
+});
