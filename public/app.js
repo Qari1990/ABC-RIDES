@@ -405,7 +405,8 @@ views.home = async (page) => {
       <a class="btn ghost" href="#/requests">${icon('hand')} Passengers looking for rides</a>
     </div>
     <div class="section-head"><h2>Upcoming rides</h2><a class="small" href="#/requests">Ride requests</a></div>
-    <div id="upcoming">${skeletons(3)}</div>`;
+    <div id="upcoming">${skeletons(3)}</div>
+    ${nativeApp ? '' : `<p class="small muted legal-links"><a href="download.html">${icon('phone')} Get the Android app</a> · <a href="privacy.html">Privacy</a> · <a href="terms.html">Terms</a></p>`}`;
   bindSearch(page);
   const rides = await api('/rides');
   $('#upcoming', page).innerHTML = rides.length
@@ -1317,6 +1318,7 @@ views.register = async (page, q) => {
       <div class="field"><label for="re">Email</label><input id="re" name="email" type="email" autocomplete="email" required></div>
       <div class="field"><label for="rp">Password</label><input id="rp" name="password" type="password" minlength="8" autocomplete="new-password" required></div>
       <button class="btn block" type="submit">Sign up</button>
+      <p class="small muted" style="margin-top:10px;text-align:center">By signing up you agree to the <a href="terms.html">Terms</a> and <a href="privacy.html">Privacy policy</a>.</p>
     </form>
     <p class="muted">Already have an account? <a href="#/login">Log in</a></p>`;
   onSubmit($('#register', page), async (d) => {
@@ -1616,10 +1618,19 @@ views.profile = async (page) => {
         <button class="btn" type="submit">Update password</button>
       </form>
     </details>
+    <details class="card">
+      <summary><b>Delete my account</b></summary>
+      <form id="delete-account" style="margin-top:12px">
+        <p class="small muted">Your name, phone, ID photos and vehicle are removed and you are signed out everywhere. Past trips stay in other people's history as "Deleted user". Cancel upcoming trips first.</p>
+        <div class="field"><label>Password</label><input name="password" type="password" autocomplete="current-password" required></div>
+        <button class="btn danger" type="submit">Delete my account</button>
+      </form>
+    </details>
     <div class="actions">
       ${nativeApp ? '<button class="btn ghost" data-action="server">🌐 Change server</button>' : ''}
       <button class="btn ghost" data-action="logout">Log out</button>
-    </div>`;
+    </div>
+    <p class="small muted legal-links"><a href="privacy.html">Privacy policy</a> · <a href="terms.html">Terms</a> · <a href="download.html">Get the app</a></p>`;
   onSubmit($('#profile', page), async (d) => {
     me = await api('/me', { method: 'PATCH', body: d });
     toast('Profile saved');
@@ -1629,6 +1640,13 @@ views.profile = async (page) => {
     await api('/me/password', { method: 'POST', body: d });
     form.reset();
     toast('Password changed. Other devices were signed out.');
+  });
+  onSubmit($('#delete-account', page), async (d) => {
+    if (!confirm('Delete your ABC Rides account? This cannot be undone.')) return;
+    await api('/me', { method: 'DELETE', body: d });
+    store.token = null; me = null; unread = { notifications: 0, messages: 0 };
+    toast('Your account has been deleted');
+    location.hash = '#/';
   });
   onClick(page, async (action) => {
     if (action === 'server') nativeApp.changeServer();

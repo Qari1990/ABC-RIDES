@@ -93,6 +93,8 @@ Environment variables:
 | `SMS_GATEWAY_METHOD` | `GET` | HTTP method for the SMS URL |
 | `SIGNUP_LIMIT_PER_HOUR` | `100` | Sign-ups allowed per network address per hour |
 | `ROUTING_URL` | `https://router.project-osrm.org` | OSRM server used by "Update distances from maps" |
+| `DEMO_SEED` | off | `1` loads the demo users and rides whenever the server starts with an empty database |
+| `KEEP_AWAKE_URL` | `RENDER_EXTERNAL_URL` | Public address the server pings every 10 minutes so free hosting doesn't put it to sleep (`KEEP_AWAKE=0` turns it off) |
 
 Fees, booking mode and onboarding requirements are changed in the app under **Admin → Settings**.
 Default policy: phone verification required, drivers must be approved, student prices need a verified student

@@ -1,0 +1,27 @@
+/* Styles for the stand-alone pages (download, privacy, terms). */
+@font-face { font-family: Inter; src: url(fonts/inter-latin.woff2) format('woff2'); font-weight: 100 900; font-display: swap; }
+:root { --bg: #f3f5f8; --surface: #fff; --text: #0f172a; --muted: #5b6474; --border: #e3e7ee; --brand: #0b7a5e; --brand-soft: #e6f4ef; }
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #090e18; --surface: #111827; --text: #e5e9f0; --muted: #98a2b3; --border: #1f2937; --brand: #34d399; --brand-soft: #0f2a22; }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 16px/1.6 Inter, system-ui, sans-serif; }
+a { color: var(--brand); }
+.wrap { max-width: 760px; margin: 0 auto; padding: 24px 16px 48px; }
+.brand { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 18px; color: var(--text); text-decoration: none; margin-bottom: 24px; }
+.hero { background: linear-gradient(135deg, #0b7a5e, #0f9d74 60%, #14b8a6); color: #fff; border-radius: 20px; padding: 28px 22px; margin-bottom: 20px; }
+.hero h1 { margin: 0 0 8px; font-size: 28px; line-height: 1.2; }
+.hero p { margin: 0 0 18px; opacity: .92; }
+.btns { display: flex; flex-wrap: wrap; gap: 10px; }
+.btn { display: inline-flex; align-items: center; gap: 8px; padding: 12px 18px; border-radius: 12px; font-weight: 600; text-decoration: none; background: #fff; color: #0b7a5e; }
+.btn.alt { background: rgba(255,255,255,.16); color: #fff; border: 1px solid rgba(255,255,255,.35); }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; padding: 18px 20px; margin-bottom: 16px; }
+.card h2 { margin: 0 0 10px; font-size: 19px; }
+h2 { font-size: 20px; margin-top: 28px; }
+ol, ul { padding-left: 22px; }
+li { margin: 4px 0; }
+table { width: 100%; border-collapse: collapse; font-size: 15px; }
+td, th { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--border); }
+code { background: var(--brand-soft); padding: 1px 6px; border-radius: 6px; font-size: 14px; }
+.muted { color: var(--muted); font-size: 14px; }
+footer { margin-top: 32px; color: var(--muted); font-size: 14px; }

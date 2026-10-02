@@ -1,0 +1,68 @@
+plugins {
+    id 'com.android.application' version '8.12.0'
+}
+
+def app = new Properties()
+file('app.properties').withInputStream { app.load(it) }
+def server = System.getenv('DEFAULT_SERVER_URL') ?: app.defaultServer
+
+android {
+    namespace 'pk.abcrides.app'
+    compileSdk 36
+
+    defaultConfig {
+        applicationId(app.applicationId as String)
+        minSdk((app.minSdk as String).toInteger())
+        targetSdk((app.targetSdk as String).toInteger())
+        versionCode((System.getenv('VERSION_CODE') ?: app.versionCode as String).toInteger())
+        versionName(app.versionName as String)
+        buildConfigField 'String', 'DEFAULT_SERVER', "\"${server.replaceAll('/+$', '')}\""
+    }
+
+    buildFeatures { buildConfig true }
+
+    // Same folders build.sh uses.
+    sourceSets {
+        main {
+            manifest.srcFile 'AndroidManifest.xml'
+            java.srcDirs = ['src']
+            res.srcDirs = ['res']
+            assets.srcDirs = ['assets']
+        }
+    }
+
+    // The upload key comes from GitHub secrets (see the workflow). Without
+    // them the release build is signed with a throwaway debug key: fine for
+    // testing, but Play will only accept bundles signed with your upload key.
+    signingConfigs {
+        release {
+            def ks = System.getenv('KEYSTORE_FILE')
+            if (ks) {
+                storeFile file(ks)
+                storePassword System.getenv('KEYSTORE_PASSWORD')
+                keyAlias System.getenv('KEY_ALIAS')
+                keyPassword System.getenv('KEY_PASSWORD') ?: System.getenv('KEYSTORE_PASSWORD')
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            signingConfig System.getenv('KEYSTORE_FILE') ? signingConfigs.release : signingConfigs.debug
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    lint {
+        checkReleaseBuilds false
+        abortOnError false
+    }
+}
+
+// Keep Gradle's output apart from build.sh's android/build folder.
+layout.buildDirectory = file('build/gradle')

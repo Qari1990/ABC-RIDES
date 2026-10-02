@@ -1,6 +1,9 @@
 const express = require('express');
 const crypto = require('node:crypto');
-const { requireUser } = require('../auth');
+const fs = require('node:fs');
+const path = require('node:path');
+const { requireUser, verifyPassword } = require('../auth');
+const { transaction } = require('../db');
 const { HttpError, bad, str, int } = require('../errors');
 const { notify } = require('../notify');
 const { smsConfigured, sendSms, normalizePhone } = require('../sms');
@@ -154,6 +157,41 @@ module.exports = function onboardingRouter(db, { uploadDir }) {
     db.prepare(`UPDATE users SET driver_status = 'pending', driver_note = NULL, licence_number = ? WHERE id = ?`).run(licence, u.id);
     notifyAdmins(db, 'New driver application', `${u.name}: ${vehicle.make} ${vehicle.model} (${vehicle.plate})`);
     res.json(selfUser(db, reload(u.id)));
+  });
+
+  // ---- Account deletion (required by Google Play) ---------------------------
+  //
+  // Removes personal details, ID photos and the vehicle, and signs out every
+  // device. Past trips and reviews stay (other people's records point at them)
+  // but show "Deleted user". Upcoming trips must be cancelled first so nobody
+  // is left waiting at the roadside.
+  router.delete('/me', requireUser, (req, res) => {
+    const u = req.user;
+    const b = req.body || {};
+    if (typeof b.password !== 'string' || !verifyPassword(b.password, u.password_hash)) {
+      throw bad('Password is wrong');
+    }
+    const now = new Date().toISOString();
+    const upcoming = db.prepare(`
+      SELECT 1 FROM rides WHERE driver_id = ? AND status = 'scheduled' AND departure_at > ?
+      UNION ALL
+      SELECT 1 FROM bookings b JOIN rides r ON r.id = b.ride_id
+      WHERE b.passenger_id = ? AND b.status IN ('pending', 'confirmed') AND r.status = 'scheduled' AND r.departure_at > ?
+      LIMIT 1`).get(u.id, now, u.id, now);
+    if (upcoming) throw new HttpError(409, 'Cancel your upcoming rides and bookings first, then delete your account');
+    const files = db.prepare('SELECT file FROM documents WHERE user_id = ?').all(u.id);
+    transaction(db, () => {
+      db.prepare(`UPDATE users SET name = 'Deleted user', email = ?, phone = '', password_hash = ?, bio = NULL,
+        organization = NULL, emergency_name = NULL, emergency_phone = NULL, cnic = NULL, verified_phone = NULL,
+        phone_verified = 0, licence_number = NULL, suspended = 1, role = 'user' WHERE id = ?`)
+        .run(`deleted-${u.id}@deleted.invalid`, crypto.randomBytes(32).toString('hex'), u.id);
+      for (const t of ['documents', 'vehicles', 'phone_codes', 'sessions', 'notifications', 'ride_requests']) {
+        const col = t === 'ride_requests' ? 'passenger_id' : 'user_id';
+        db.prepare(`DELETE FROM ${t} WHERE ${col} = ?`).run(u.id);
+      }
+    });
+    for (const { file } of files) fs.rm(path.join(uploadDir, path.basename(file)), { force: true }, () => {});
+    res.status(204).end();
   });
 
   return router;

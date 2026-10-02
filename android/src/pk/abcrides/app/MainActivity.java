@@ -10,6 +10,8 @@ import android.graphics.Color;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.view.View;
+import android.view.WindowInsets;
 import android.webkit.GeolocationPermissions;
 import android.webkit.JavascriptInterface;
 import android.webkit.ValueCallback;
@@ -17,6 +19,11 @@ import android.webkit.WebChromeClient;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
+import android.widget.FrameLayout;
+
+import java.lang.reflect.InvocationHandler;
+import java.lang.reflect.Method;
+import java.lang.reflect.Proxy;
 
 /**
  * ABC Rides for Android: a WebView shell around the ABC Rides web app.
@@ -32,19 +39,26 @@ public class MainActivity extends Activity {
     private static final String SETUP_PAGE = "file:///android_asset/setup.html";
     private static final int REQUEST_FILE = 1;
     private static final int REQUEST_LOCATION = 2;
+    private static final String BRAND = "#0b7a5e";
 
     private WebView web;
     private ValueCallback<Uri[]> fileCallback;
     private GeolocationPermissions.Callback geoCallback;
     private String geoOrigin;
+    private Object backCallback;
+    private boolean backRegistered;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        getWindow().setStatusBarColor(Color.parseColor("#0f766e"));
+        getWindow().setStatusBarColor(Color.parseColor(BRAND));
 
         web = new WebView(this);
-        setContentView(web);
+        FrameLayout root = new FrameLayout(this);
+        root.setBackgroundColor(Color.parseColor(BRAND));
+        root.addView(web);
+        setContentView(root);
+        applyInsets(root);
 
         WebSettings s = web.getSettings();
         s.setJavaScriptEnabled(true);
@@ -64,6 +78,67 @@ public class MainActivity extends Activity {
             showSetup(null);
         } else {
             web.loadUrl(server + "/");
+        }
+    }
+
+    /**
+     * Android 15+ draws apps edge to edge, behind the status bar, navigation
+     * bar and keyboard. Pad the page so nothing hides behind them; the brand
+     * colour shows through the bars.
+     */
+    private void applyInsets(View root) {
+        if (Build.VERSION.SDK_INT < 35) return;
+        root.setOnApplyWindowInsetsListener(new View.OnApplyWindowInsetsListener() {
+            @Override
+            @SuppressWarnings("deprecation")
+            public WindowInsets onApplyWindowInsets(View v, WindowInsets insets) {
+                // On these versions the "system window" insets include the keyboard.
+                v.setPadding(insets.getSystemWindowInsetLeft(), insets.getSystemWindowInsetTop(),
+                        insets.getSystemWindowInsetRight(), insets.getSystemWindowInsetBottom());
+                return insets.consumeSystemWindowInsets();
+            }
+        });
+    }
+
+    /**
+     * Android 16+ no longer calls onBackPressed() for apps targeting it; the
+     * back gesture goes to registered OnBackInvokedCallbacks instead. Register
+     * one while the page has history (so back goes to the previous screen) and
+     * remove it otherwise (so back leaves the app with the system animation).
+     * Done through reflection so the app still builds against older SDKs.
+     */
+    private void updateBackHandling() {
+        if (Build.VERSION.SDK_INT < 33) return;
+        boolean want = web.canGoBack();
+        if (want == backRegistered) return;
+        try {
+            Class<?> type = Class.forName("android.window.OnBackInvokedCallback");
+            Object dispatcher = Activity.class.getMethod("getOnBackInvokedDispatcher").invoke(this);
+            if (backCallback == null) {
+                backCallback = Proxy.newProxyInstance(type.getClassLoader(), new Class<?>[] { type }, new InvocationHandler() {
+                    @Override
+                    public Object invoke(Object proxy, Method method, Object[] args) {
+                        String name = method.getName();
+                        if (name.equals("onBackInvoked")) {
+                            if (web.canGoBack()) web.goBack();
+                            return null;
+                        }
+                        if (name.equals("hashCode")) return System.identityHashCode(proxy);
+                        if (name.equals("equals")) return args != null && proxy == args[0];
+                        if (name.equals("toString")) return "AbcRidesBack";
+                        return null;
+                    }
+                });
+            }
+            if (want) {
+                dispatcher.getClass().getMethod("registerOnBackInvokedCallback", int.class, type)
+                        .invoke(dispatcher, 0, backCallback);
+            } else {
+                dispatcher.getClass().getMethod("unregisterOnBackInvokedCallback", type).invoke(dispatcher, backCallback);
+            }
+            backRegistered = want;
+        } catch (Exception e) {
+            // Older behaviour (onBackPressed) still applies.
         }
     }
 
@@ -131,6 +206,16 @@ public class MainActivity extends Activity {
             return true;
         }
 
+        @Override
+        public void doUpdateVisitedHistory(WebView view, String url, boolean isReload) {
+            updateBackHandling();
+        }
+
+        @Override
+        public void onPageFinished(WebView view, String url) {
+            updateBackHandling();
+        }
+
         // Called for main-frame failures only (the newer overload forwards here for them).
         @Override
         @SuppressWarnings("deprecation")
@@ -186,6 +271,7 @@ public class MainActivity extends Activity {
                 public void run() {
                     web.clearHistory();
                     web.loadUrl(clean + "/");
+                    updateBackHandling();
                 }
             });
         }

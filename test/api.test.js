@@ -167,3 +167,25 @@ test('completing a ride and leaving reviews', async () => {
   assert.equal(profile.body.reviews[0].comment, 'On time, safe driver');
   assert.equal(profile.body.phone, undefined);
 });
+
+test('delete account: needs the password and no upcoming trips, then anonymises', async () => {
+  const { token: driver } = await register({ email: 'leaving-driver@test.pk' });
+  const { token, user } = await register({ email: 'leaving@test.pk' });
+  const [ride] = (await call('POST', '/rides', { token: driver, body: rideBody({ instant_book: true }) })).body;
+  assert.equal((await call('POST', `/rides/${ride.id}/bookings`, { token, body: { seats: 1 } })).status, 201);
+
+  assert.equal((await call('DELETE', '/me', { token, body: { password: 'wrong-pass' } })).status, 400);
+  assert.equal((await call('DELETE', '/me', { token, body: { password: 'secret123' } })).status, 409);
+
+  const [booking] = (await call('GET', '/me/bookings', { token })).body;
+  assert.equal((await call('POST', `/bookings/${booking.id}/cancel`, { token })).status, 200);
+  assert.equal((await call('DELETE', '/me', { token, body: { password: 'secret123' } })).status, 204);
+
+  assert.equal((await call('GET', '/me', { token })).status, 401);
+  assert.equal((await call('POST', '/auth/login', { body: { email: 'leaving@test.pk', password: 'secret123' } })).status, 401);
+  const row = db.prepare('SELECT name, email, cnic FROM users WHERE id = ?').get(user.id);
+  assert.equal(row.name, 'Deleted user');
+  assert.match(row.email, /@deleted\.invalid$/);
+  // The email can be used again for a fresh account.
+  assert.equal((await register({ email: 'leaving@test.pk' })).user.email, 'leaving@test.pk');
+});

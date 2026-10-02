@@ -1,10 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    package="pk.abcrides.app"
-    android:versionCode="2"
-    android:versionName="1.1">
-
-    <uses-sdk android:minSdkVersion="21" android:targetSdkVersion="34" />
+<!-- Package name, version and SDK levels come from app.properties
+     (build.sh adds them here; Gradle sets them from build.gradle). -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />

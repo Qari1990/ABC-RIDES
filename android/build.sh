@@ -6,16 +6,21 @@
 #
 # Usage:  android/build.sh [default-server-url]
 #   e.g.  android/build.sh https://abc-rides.onrender.com
-# Leave the URL out to make the app ask for the server on first launch.
+# Without a URL, defaultServer from app.properties is used; pass "" to make
+# the app ask for the server on first launch.
 #
 # Output: android/build/abc-rides.apk
+# Version numbers live in app.properties. For a Play Store bundle (.aab) use
+# the GitHub Actions workflow (.github/workflows/android.yml) instead.
 # Signing uses android/debug.keystore (created on first run). For Play Store
 # releases, set KEYSTORE / KEYSTORE_PASS / KEY_ALIAS to your release key.
 set -euo pipefail
 
 cd "$(dirname "$0")"
 ANDROID_JAR="${ANDROID_JAR:-/usr/lib/android-sdk/platforms/android-23/android.jar}"
-DEFAULT_SERVER="${1:-${DEFAULT_SERVER_URL:-}}"
+prop() { sed -n "s/^$1=//p" app.properties; }
+APP_ID=$(prop applicationId)
+DEFAULT_SERVER="${1-${DEFAULT_SERVER_URL-$(prop defaultServer)}}"
 KEYSTORE="${KEYSTORE:-debug.keystore}"
 KEYSTORE_PASS="${KEYSTORE_PASS:-android}"
 KEY_ALIAS="${KEY_ALIAS:-abcrides}"
@@ -39,18 +44,23 @@ public final class BuildConfig {
 }
 JAVA
 
+# The source manifest has no package or version (Gradle style); add them.
+sed "s|<manifest xmlns:android=\"http://schemas.android.com/apk/res/android\">|<manifest xmlns:android=\"http://schemas.android.com/apk/res/android\" package=\"$APP_ID\" android:versionCode=\"$(prop versionCode)\" android:versionName=\"$(prop versionName)\"><uses-sdk android:minSdkVersion=\"$(prop minSdk)\" android:targetSdkVersion=\"$(prop targetSdk)\" />|" \
+  AndroidManifest.xml > "$OUT/AndroidManifest.xml"
+grep -q 'package=' "$OUT/AndroidManifest.xml" || { echo "Could not prepare the manifest"; exit 1; }
+
 echo "==> Generating R.java"
-aapt package -f -m -J "$OUT/gen" -M AndroidManifest.xml -S res -I "$ANDROID_JAR"
+aapt package -f -m -J "$OUT/gen" -M "$OUT/AndroidManifest.xml" -S res -I "$ANDROID_JAR"
 
 echo "==> Compiling Java"
 javac -nowarn --release 8 -Xlint:-options -encoding UTF-8 -classpath "$ANDROID_JAR" -d "$OUT/classes" \
   $(find src "$OUT/gen" -name '*.java')
 
 echo "==> Converting to dex"
-dalvik-exchange --dex --min-sdk-version=21 --output="$OUT/classes.dex" "$OUT/classes"
+dalvik-exchange --dex --min-sdk-version="$(prop minSdk)" --output="$OUT/classes.dex" "$OUT/classes"
 
 echo "==> Packaging"
-aapt package -f -0 arsc -M AndroidManifest.xml -S res -A assets -I "$ANDROID_JAR" -F "$OUT/unsigned.apk"
+aapt package -f -0 arsc -M "$OUT/AndroidManifest.xml" -S res -A assets -I "$ANDROID_JAR" -F "$OUT/unsigned.apk"
 (cd "$OUT" && aapt add -f unsigned.apk classes.dex >/dev/null)
 zipalign -f -p 4 "$OUT/unsigned.apk" "$OUT/aligned.apk"
 
@@ -62,7 +72,7 @@ fi
 
 echo "==> Signing"
 apksigner sign --ks "$KEYSTORE" --ks-pass "pass:$KEYSTORE_PASS" --ks-key-alias "$KEY_ALIAS" \
-  --min-sdk-version 21 --out "$OUT/abc-rides.apk" "$OUT/aligned.apk"
+  --min-sdk-version "$(prop minSdk)" --out "$OUT/abc-rides.apk" "$OUT/aligned.apk"
 apksigner verify "$OUT/abc-rides.apk"
 
 echo "==> Built $(pwd)/$OUT/abc-rides.apk${DEFAULT_SERVER:+ (server: $DEFAULT_SERVER)}"

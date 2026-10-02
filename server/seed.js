@@ -1,13 +1,14 @@
 // Fills the database with demo users and upcoming rides so the app has
 // something to show. Every demo account uses the password "password123";
 // admin@example.com is an admin.
+//
+// Run it with `npm run seed`, or set DEMO_SEED=1 so the server seeds itself
+// whenever it starts with an empty database (useful on hosts like Render's
+// free plan, which wipe the disk on every restart).
 const { openDb, transaction } = require('./db');
 const { hashPassword } = require('./auth');
 const { placeKm, minutesFor } = require('./geo');
 const { normalizePhone } = require('./sms');
-
-const db = openDb();
-const hash = hashPassword('password123');
 
 const users = [
   ['Ahmed Raza', 'ahmed@example.com', '+92 300 1234567', 'professional', 'male', 'Software engineer, Systems Ltd'],
@@ -26,65 +27,80 @@ function at(daysAhead, hour, minute = 0) {
   return d.toISOString();
 }
 
-transaction(db, () => {
-  const ids = {};
-  for (const [name, email, phone, type, gender, org] of users) {
-    const existing = db.prepare('SELECT id FROM users WHERE email = ?').get(email);
-    ids[email] = existing ? existing.id : Number(db.prepare(`
-      INSERT INTO users (name, email, phone, password_hash, traveler_type, gender, organization)
-      VALUES (?, ?, ?, ?, ?, ?, ?)`).run(name, email, phone, hash, type, gender, org).lastInsertRowid);
-  }
-  db.prepare(`UPDATE users SET role = 'admin' WHERE email = 'admin@example.com'`).run();
-  // Demo accounts are already through onboarding: phone verified, ID checked, Rs 1,000 in the wallet.
-  let cnic = 3520210000001;
-  for (const [, email, phone] of users) {
-    db.prepare(`UPDATE users SET phone_verified = 1, verified_phone = ?, verification_status = 'verified',
-      verification_doc_type = 'cnic', cnic = COALESCE(cnic, ?), wallet_balance = 1000 WHERE email = ?`)
-      .run(normalizePhone(phone), String(cnic++), email);
-  }
-  db.prepare(`UPDATE users SET student_status = 'verified' WHERE email = 'ayesha@example.com'`).run();
-  const vehicles = [
-    ['ahmed@example.com', 'Honda', 'Civic', 2020, 'White', 'LEB-4521', 4],
-    ['sara@example.com', 'Toyota', 'Corolla', 2018, 'Grey', 'ICT-7788', 4],
-    ['bilal@example.com', 'Suzuki', 'Cultus', 2017, 'Red', 'KHI-3302', 4],
-  ];
-  for (const [email, ...v] of vehicles) {
-    db.prepare(`UPDATE users SET driver_status = 'approved', licence_number = 'DEMO-LICENCE' WHERE email = ?`).run(email);
-    db.prepare(`INSERT OR REPLACE INTO vehicles (user_id, make, model, year, color, plate, seats) VALUES (?, ?, ?, ?, ?, ?, ?)`)
-      .run(ids[email], ...v);
-  }
+function seedDemo(db) {
+  const hash = hashPassword('password123');
+  transaction(db, () => {
+    const ids = {};
+    for (const [name, email, phone, type, gender, org] of users) {
+      const existing = db.prepare('SELECT id FROM users WHERE email = ?').get(email);
+      ids[email] = existing ? existing.id : Number(db.prepare(`
+        INSERT INTO users (name, email, phone, password_hash, traveler_type, gender, organization)
+        VALUES (?, ?, ?, ?, ?, ?, ?)`).run(name, email, phone, hash, type, gender, org).lastInsertRowid);
+    }
+    db.prepare(`UPDATE users SET role = 'admin' WHERE email = 'admin@example.com'`).run();
+    // Demo accounts are already through onboarding: phone verified, ID checked, Rs 1,000 in the wallet.
+    let cnic = 3520210000001;
+    for (const [, email, phone] of users) {
+      db.prepare(`UPDATE users SET phone_verified = 1, verified_phone = ?, verification_status = 'verified',
+        verification_doc_type = 'cnic', cnic = COALESCE(cnic, ?), wallet_balance = 1000 WHERE email = ?`)
+        .run(normalizePhone(phone), String(cnic++), email);
+    }
+    db.prepare(`UPDATE users SET student_status = 'verified' WHERE email = 'ayesha@example.com'`).run();
+    const vehicles = [
+      ['ahmed@example.com', 'Honda', 'Civic', 2020, 'White', 'LEB-4521', 4],
+      ['sara@example.com', 'Toyota', 'Corolla', 2018, 'Grey', 'ICT-7788', 4],
+      ['bilal@example.com', 'Suzuki', 'Cultus', 2017, 'Red', 'KHI-3302', 4],
+    ];
+    for (const [email, ...v] of vehicles) {
+      db.prepare(`UPDATE users SET driver_status = 'approved', licence_number = 'DEMO-LICENCE' WHERE email = ?`).run(email);
+      db.prepare(`INSERT OR REPLACE INTO vehicles (user_id, make, model, year, color, plate, seats) VALUES (?, ?, ?, ?, ?, ?, ?)`)
+        .run(ids[email], ...v);
+    }
 
-  // [driver, stops (city, place name), departure, seats, Rs/km, student %, women only, instant, home pickup/drop, vehicle, notes, payment, account]
-  const rides = [
-    ['ahmed@example.com', [['Lahore', 'Thokar Niaz Baig'], ['Islamabad', 'Faizabad Interchange']], at(1, 7), 3, 8, 20, 0, 1, 1, 'Honda Civic (White)', 'Weekly office commute, AC car, no smoking.', 'cash,jazzcash', 'JazzCash 0300 1234567 (Ahmed Raza)'],
-    ['ahmed@example.com', [['Islamabad', 'Faizabad Interchange'], ['Lahore', 'Thokar Niaz Baig']], at(4, 18), 3, 8, 20, 0, 1, 0, 'Honda Civic (White)', 'Friday evening ride back home.', 'cash,jazzcash', 'JazzCash 0300 1234567 (Ahmed Raza)'],
-    ['sara@example.com', [['Islamabad', 'G-9 Markaz (Karachi Company)'], ['Peshawar', 'Hayatabad']], at(2, 9), 2, 9, 10, 1, 0, 1, 'Toyota Corolla (Grey)', 'Women only. Light luggage please.', 'cash,easypaisa', 'Easypaisa 0345 1112222'],
-    ['bilal@example.com', [['Karachi', 'Sohrab Goth'], ['Hyderabad', 'Qasimabad']], at(1, 16), 4, 7, 25, 0, 0, 0, 'Suzuki Cultus (Red)', null, 'cash', null],
-    ['bilal@example.com', [['Lahore', 'Kalma Chowk'], ['Gujranwala', 'City centre (Sheranwala Bagh)'], ['Sialkot', 'City centre (Allama Iqbal Chowk)']], at(3, 8, 30), 3, 7, 15, 0, 1, 1, 'Suzuki Cultus (Red)', 'Students welcome, extra discount! Stopping in Gujranwala.', 'cash', null],
-  ];
-  const place = db.prepare('SELECT * FROM places WHERE city = ? AND name = ?');
-  const insert = db.prepare(`
-    INSERT INTO rides (driver_id, from_city, to_city, pickup_point, dropoff_point, departure_at, seats_total,
-      price_per_seat, fare_per_km, student_discount_pct, women_only, instant_book, home_pickup, home_drop, home_radius_km,
-      vehicle, notes, payment_methods, payment_details, duration_minutes, stops)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
-  for (const [email, route, when, seats, rate, student, women, instant, home, ...rest] of rides) {
-    const places = route.map(([city, name]) => place.get(city, name));
-    let km = 0;
-    const stops = places.map((p, i) => {
-      if (i) km += placeKm(db, places[i - 1], p);
-      return { place_id: p.id, city: p.city, name: p.name, lat: p.lat, lon: p.lon, km };
-    });
-    const first = stops[0];
-    const last = stops[stops.length - 1];
-    insert.run(ids[email], first.city, last.city, first.name, last.name, when, seats, Math.max(10, Math.round((km * rate) / 10) * 10),
-      rate, student, women, instant, home, home, home ? 5 : 0, ...rest, minutesFor(km), JSON.stringify(stops));
-  }
+    // [driver, stops (city, place name), departure, seats, Rs/km, student %, women only, instant, home pickup/drop, vehicle, notes, payment, account]
+    const rides = [
+      ['ahmed@example.com', [['Lahore', 'Thokar Niaz Baig'], ['Islamabad', 'Faizabad Interchange']], at(1, 7), 3, 8, 20, 0, 1, 1, 'Honda Civic (White)', 'Weekly office commute, AC car, no smoking.', 'cash,jazzcash', 'JazzCash 0300 1234567 (Ahmed Raza)'],
+      ['ahmed@example.com', [['Islamabad', 'Faizabad Interchange'], ['Lahore', 'Thokar Niaz Baig']], at(4, 18), 3, 8, 20, 0, 1, 0, 'Honda Civic (White)', 'Friday evening ride back home.', 'cash,jazzcash', 'JazzCash 0300 1234567 (Ahmed Raza)'],
+      ['sara@example.com', [['Islamabad', 'G-9 Markaz (Karachi Company)'], ['Peshawar', 'Hayatabad']], at(2, 9), 2, 9, 10, 1, 0, 1, 'Toyota Corolla (Grey)', 'Women only. Light luggage please.', 'cash,easypaisa', 'Easypaisa 0345 1112222'],
+      ['bilal@example.com', [['Karachi', 'Sohrab Goth'], ['Hyderabad', 'Qasimabad']], at(1, 16), 4, 7, 25, 0, 0, 0, 'Suzuki Cultus (Red)', null, 'cash', null],
+      ['bilal@example.com', [['Lahore', 'Kalma Chowk'], ['Gujranwala', 'City centre (Sheranwala Bagh)'], ['Sialkot', 'City centre (Allama Iqbal Chowk)']], at(3, 8, 30), 3, 7, 15, 0, 1, 1, 'Suzuki Cultus (Red)', 'Students welcome, extra discount! Stopping in Gujranwala.', 'cash', null],
+    ];
+    const place = db.prepare('SELECT * FROM places WHERE city = ? AND name = ?');
+    const insert = db.prepare(`
+      INSERT INTO rides (driver_id, from_city, to_city, pickup_point, dropoff_point, departure_at, seats_total,
+        price_per_seat, fare_per_km, student_discount_pct, women_only, instant_book, home_pickup, home_drop, home_radius_km,
+        vehicle, notes, payment_methods, payment_details, duration_minutes, stops)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+    for (const [email, route, when, seats, rate, student, women, instant, home, ...rest] of rides) {
+      const places = route.map(([city, name]) => place.get(city, name));
+      let km = 0;
+      const stops = places.map((p, i) => {
+        if (i) km += placeKm(db, places[i - 1], p);
+        return { place_id: p.id, city: p.city, name: p.name, lat: p.lat, lon: p.lon, km };
+      });
+      const first = stops[0];
+      const last = stops[stops.length - 1];
+      insert.run(ids[email], first.city, last.city, first.name, last.name, when, seats, Math.max(10, Math.round((km * rate) / 10) * 10),
+        rate, student, women, instant, home, home, home ? 5 : 0, ...rest, minutesFor(km), JSON.stringify(stops));
+    }
 
-  db.prepare(`
-    INSERT INTO ride_requests (passenger_id, from_city, to_city, earliest_at, latest_at, seats, max_price, notes)
-    VALUES (?, 'Islamabad', 'Lahore', ?, ?, 1, 2500, 'Going home for the weekend, one backpack.')`)
-    .run(ids['ayesha@example.com'], at(5, 6), at(5, 22));
-});
+    db.prepare(`
+      INSERT INTO ride_requests (passenger_id, from_city, to_city, earliest_at, latest_at, seats, max_price, notes)
+      VALUES (?, 'Islamabad', 'Lahore', ?, ?, 1, 2500, 'Going home for the weekend, one backpack.')`)
+      .run(ids['ayesha@example.com'], at(5, 6), at(5, 22));
+  });
+}
 
-console.log('Seeded demo data. Log in as ahmed@example.com / password123 (or ayesha@, bilal@, sara@, admin@).');
+/** Seeds only when nobody has signed up yet, so real data is never touched. */
+function seedIfEmpty(db) {
+  if (db.prepare('SELECT COUNT(*) AS n FROM users').get().n > 0) return false;
+  seedDemo(db);
+  return true;
+}
+
+module.exports = { seedDemo, seedIfEmpty };
+
+if (require.main === module) {
+  seedDemo(openDb());
+  console.log('Seeded demo data. Log in as ahmed@example.com / password123 (or ayesha@, bilal@, sara@, admin@).');
+}

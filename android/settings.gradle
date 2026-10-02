@@ -1,0 +1,16 @@
+// Gradle build for the Play Store bundle (.aab). Runs on GitHub Actions
+// (.github/workflows/android.yml); build.sh remains the no-SDK APK build.
+pluginManagement {
+    repositories {
+        google()
+        mavenCentral()
+        gradlePluginPortal()
+    }
+}
+dependencyResolutionManagement {
+    repositories {
+        google()
+        mavenCentral()
+    }
+}
+rootProject.name = 'abc-rides'

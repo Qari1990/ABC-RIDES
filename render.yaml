@@ -1,6 +1,8 @@
 # One-click deploy on Render (https://render.com): New → Blueprint → pick this repo.
 # The free plan has no persistent disk, so data resets on each deploy/restart;
-# fine for testing. Add a disk (paid) mounted at /data to keep data.
+# DEMO_SEED reloads the demo users and rides each time so the app is never
+# empty, and the server pings itself every 10 minutes so it doesn't fall
+# asleep. For real users, move to a paid plan with a disk mounted at /data.
 services:
   - type: web
     name: abc-rides
@@ -8,6 +10,8 @@ services:
     plan: free
     healthCheckPath: /api/health
     envVars:
+      - key: DEMO_SEED
+        value: "1"
       - key: ADMIN_EMAILS
         sync: false
       # Optional: your SMS provider's send URL with {to} and {message}
