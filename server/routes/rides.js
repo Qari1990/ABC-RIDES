@@ -45,9 +45,11 @@ const stopLabel = (stop) => (stop.name.toLowerCase().includes(String(stop.city).
 
 function describeSegment(ride, seg) {
   const stops = stopsOf(ride);
+  const fare = segmentFare(ride, seg.board, seg.alight);
   return {
     board: seg.board, alight: seg.alight, from: stopLabel(stops[seg.board]), to: stopLabel(stops[seg.alight]),
-    km: segmentKm(ride, seg.board, seg.alight), fare: segmentFare(ride, seg.board, seg.alight),
+    km: segmentKm(ride, seg.board, seg.alight), fare,
+    student_fare: studentFare(fare, ride),
   };
 }
 

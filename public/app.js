@@ -596,7 +596,7 @@ views.ride = async (page, q, id) => {
       </div>
       <div class="badges">
         ${r.status !== 'scheduled' ? `<span class="badge ${r.status}">${r.status}</span>` : ''}
-        ${r.student_discount_pct ? `<span class="badge student">🎓 Students ${money(r.student_price)} (${r.student_discount_pct}% off)</span>` : ''}
+        ${r.student_discount_pct ? `<span class="badge student">🎓 Students ${money(r.segment ? r.segment.student_fare : r.student_price)} (${r.student_discount_pct}% off)</span>` : ''}
         ${r.women_only ? '<span class="badge women">♀ Women only</span>' : ''}
         ${r.instant_book ? '<span class="badge">⚡ Instant booking</span>' : '<span class="badge">Driver approves requests</span>'}
       </div>
