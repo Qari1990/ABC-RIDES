@@ -112,9 +112,30 @@ function dayRange(date) {
   return [start, new Date(start.getTime() + 864e5)];
 }
 
-function cityOptions() {
-  return `<datalist id="cities">${cities.map((c) => `<option value="${esc(c)}">`).join('')}</datalist>`;
+// The launch area (Admin → Settings): rides and requests start and end in these cities.
+const serviceCities = () => String(settings.service_cities || '').split(',').map((c) => c.trim()).filter(Boolean);
+function cityOptions({ all = false } = {}) {
+  const list = !all && serviceCities().length ? serviceCities() : cities;
+  return `<datalist id="cities">${list.map((c) => `<option value="${esc(c)}">`).join('')}</datalist>`;
 }
+// Every pair of launch cities, both ways: Lahore → Sahiwal, Sahiwal → Lahore...
+function launchRoutes() {
+  const list = serviceCities();
+  return list.length > 1 && list.length <= 4 ? list.flatMap((a) => list.filter((b) => b !== a).map((b) => [a, b])) : [];
+}
+
+// WhatsApp support (Admin → Settings). 0300 1234567 → wa.me/923001234567
+function whatsappLink(text = '') {
+  const n = String(settings.support_whatsapp || '').replace(/\D/g, '');
+  if (!n) return null;
+  const intl = n.startsWith('0') ? `92${n.slice(1)}` : n;
+  const who = me ? `\n\n(${me.name}, account #${me.id})` : '';
+  return `https://wa.me/${intl}?text=${encodeURIComponent(`Assalam-o-Alaikum ABC Rides! ${text}${who}`)}`;
+}
+const whatsappButton = (text, label = 'Chat with us on WhatsApp', cls = 'btn') => {
+  const link = whatsappLink(text);
+  return link ? `<a class="${cls} whatsapp" href="${link}" target="_blank" rel="noopener">💬 ${label}</a>` : '';
+};
 
 function formData(form) {
   return Object.fromEntries(new FormData(form).entries());
@@ -553,6 +574,7 @@ views.home = async (page) => {
       <p>Travel with verified commuters, students and regular travellers. Pay only for your seat.</p>
     </section>
     ${searchForm()}
+    ${launchRoutes().length ? `<div class="launch-routes"><span class="small muted">Now live:</span>${launchRoutes().map(([a, b]) => `<a class="chip" href="#/search?from=${encodeURIComponent(a)}&to=${encodeURIComponent(b)}">${esc(a)} → ${esc(b)}</a>`).join('')}</div>` : ''}
     <div class="audiences">
       <div><b>${icon('briefcase')}</b>Office commuters</div>
       <div><b>${icon('graduation-cap')}</b>Students</div>
@@ -564,7 +586,7 @@ views.home = async (page) => {
     </div>
     <div class="section-head"><h2>Upcoming rides</h2><a class="small" href="#/requests">Ride requests</a></div>
     <div id="upcoming">${skeletons(3)}</div>
-    ${nativeApp ? '' : `<p class="small muted legal-links"><a href="download.html">${icon('phone')} Get the Android app</a> · <a href="#/how-it-works">How fares work</a> · <a href="privacy.html">Privacy</a> · <a href="terms.html">Terms</a></p>`}`;
+    ${nativeApp ? '' : `<p class="small muted legal-links"><a href="download.html">${icon('phone')} Get the Android app</a> · <a href="#/how-it-works">How fares work</a> · <a href="#/help">Help & FAQ</a> · <a href="privacy.html">Privacy</a> · <a href="terms.html">Terms</a></p>`}`;
   bindSearch(page);
   const fill = async () => {
     const rides = await api('/rides');
@@ -833,6 +855,7 @@ views.ride = async (page, q, id) => {
         <button class="btn danger" data-action="sos">🚨 SOS</button>
       </div>
       ${sosPanel(r)}` : ''}
+    ${me && onTrip && whatsappLink() ? `<p class="small" style="margin:0 0 12px">Problem with this trip? ${whatsappButton(`I need help with ride #${r.id} (${r.from_city} → ${r.to_city}, ${when(r.departure_at)}).`, 'Tell ABC Rides support', 'btn small ghost')}</p>` : ''}
     <div class="card">
       <h3>Driver</h3>
       ${personRow(r.driver)}
@@ -1094,9 +1117,9 @@ views.offer = async (page, q) => {
       <section data-step="2" hidden>
         <div class="card">
           <h3 class="step-title"><span class="step">2</span> When, which car, and how many seats?</h3>
-          <div class="field"><label>Ride type</label>
+          ${settings.private_rides_enabled ? `<div class="field"><label>Ride type</label>
             <div class="segmented small"><label><input type="radio" name="ride_type" value="shared" checked> Shared seats</label><label><input type="radio" name="ride_type" value="private"> Private (whole car)</label></div>
-            <p class="small muted" id="type-hint"></p></div>
+            <p class="small muted" id="type-hint"></p></div>` : '<input type="hidden" name="ride_type" value="shared"><p hidden id="type-hint"></p>'}
           <div class="field"><label>Car</label>
             <div class="segmented small"><label><input type="radio" name="car_choice" value="mine" checked> ${me.vehicle ? esc(carLabel(me.vehicle)) : 'My car'}</label><label><input type="radio" name="car_choice" value="temp"> A different car for this ride</label></div>
             <div id="temp-car" class="card" style="box-shadow:none" hidden>
@@ -1573,9 +1596,9 @@ views.newRequest = async (page, q) => {
         <div class="field"><label>Leave after</label><input name="from_time" type="time" value="06:00" required></div>
         <div class="field"><label>Leave before</label><input name="to_time" type="time" value="22:00" required></div>
       </div>
-      <div class="field"><label>Trip type</label>
+      ${settings.private_rides_enabled ? `<div class="field"><label>Trip type</label>
         <div class="segmented small"><label><input type="radio" name="trip_type" value="shared" checked> Shared (per seat)</label><label><input type="radio" name="trip_type" value="private"> 🔒 Private car (whole car)</label></div>
-        <p class="small muted" id="rq-type-hint">Shared: you pay per seat and the driver may take other passengers. Cheapest.</p></div>
+        <p class="small muted" id="rq-type-hint">Shared: you pay per seat and the driver may take other passengers. Cheapest.</p></div>` : '<p hidden id="rq-type-hint"></p>'}
       <div class="row two">
         <div class="field"><label id="rq-seats-label">Seats</label><select name="seats">${[1, 2, 3, 4, 5, 6, 7].map((n) => `<option ${String(q.seats) === String(n) ? 'selected' : ''}>${n}</option>`).join('')}</select></div>
         <div class="field"><label id="rq-price-label">Max price per seat (Rs, optional)</label><input name="max_price" type="number" min="0" step="50"></div>
@@ -1901,6 +1924,7 @@ views.login = async (page, q) => {
       <p class="small" style="margin:12px 0 0;text-align:center"><a href="#/forgot">Forgot password?</a></p>
     </form>
     <p class="muted">New here? <a href="#/register${q.next ? `?next=${encodeURIComponent(q.next)}` : ''}">Create an account</a></p>
+    <p class="small muted">Trouble logging in? <a href="#/help">Help & FAQ</a>${settings.support_whatsapp ? ' · WhatsApp support' : ''}</p>
 `;
   onSubmit($('#login', page), async (d) => {
     const res = await api('/auth/login', { method: 'POST', body: d });
@@ -2457,6 +2481,7 @@ views.profile = async (page) => {
       ${nativeApp && me.role === 'admin' ? '<button class="btn ghost" data-action="server">🌐 Change server</button>' : ''}
       <button class="btn ghost" data-action="logout">Log out</button>
     </div>
+    <a class="btn block ghost" href="#/help" style="margin-bottom:12px">❓ Help & FAQ${settings.support_whatsapp ? ' · WhatsApp support' : ''}</a>
     <p class="small muted legal-links"><a href="#/how-it-works">How fares &amp; reliability work</a> · <a href="privacy.html">Privacy policy</a> · <a href="terms.html">Terms</a> · <a href="download.html">Get the app</a></p>`;
   onSubmit($('#profile', page), async (d) => {
     me = await api('/me', { method: 'PATCH', body: d });
@@ -2720,11 +2745,11 @@ views.admin = async (page, q) => {
         <h3>Add a pickup / drop-off point</h3>
         <p class="small muted">In Google Maps, long-press the spot and copy the coordinates (e.g. 31.5040, 74.3310).</p>
         <div class="row three">
-          <div class="field"><label>City</label><input name="city" list="cities" required></div>
+          <div class="field"><label>City</label><input name="city" list="cities-all" required></div>
           <div class="field"><label>Name</label><input name="name" placeholder="e.g. Daewoo Terminal" required></div>
           <div class="field"><label>Coordinates</label><input name="coords" placeholder="31.5040, 74.3310" required></div>
         </div>
-        ${cityOptions()}
+        ${cityOptions({ all: true }).replace('id="cities"', 'id="cities-all"')}
         <button class="btn small" type="submit">Add point</button>
       </form>
       ${Object.entries(byCity).map(([city, list]) => `
@@ -2778,6 +2803,11 @@ views.admin = async (page, q) => {
       ['Calculator & comparisons', ['petrol_price', 'car_km_per_litre', 'ref_bus_per_km', 'ref_private_car_per_km']],
       ['Reliability points', ['reliability_threshold', 'low_reliability_fee', 'penalty_driver_cancel', 'penalty_passenger_cancel', 'late_cancel_hours', 'reward_completed']],
       ['Onboarding & security', ['require_email_verification', 'require_id_for_booking', 'require_driver_approval', 'student_price_requires_verification']],
+      ['Launch area', ['service_cities']],
+      ['Fares by car class (% of a standard car)', ['fare_factor_economy', 'fare_factor_standard', 'fare_factor_premium', 'fare_factor_suv', 'fare_factor_van', 'no_ac_fare_factor']],
+      ['Private rides', ['private_rides_enabled', 'private_per_km', 'private_min_per_km', 'private_max_per_km', 'private_requires_id']],
+      ['Reviews & ride timings', ['review_points_5', 'review_points_4', 'review_points_3', 'review_points_2', 'review_points_1', 'auto_complete_hours']],
+      ['Support & notifications', ['support_whatsapp', 'notify_admins_of_requests']],
       ['Wallet top-up accounts', ['topup_accounts']],
     ];
     const input = (k) => {
@@ -2786,6 +2816,8 @@ views.admin = async (page, q) => {
       if (sp.type === 'boolean') return `<label class="check"><input type="checkbox" name="${k}" ${v ? 'checked' : ''}> ${esc(sp.label)}</label>`;
       if (sp.options) return `<div class="field"><label>${esc(sp.label)}</label><select name="${k}">${sp.options.map((o) => `<option value="${o}" ${o === v ? 'selected' : ''}>${esc(MODE[o] || o)}</option>`).join('')}</select></div>`;
       if (sp.type === 'number') return `<div class="field"><label>${esc(sp.label)}</label><input name="${k}" type="number" min="${sp.min}" max="${sp.max}" value="${v}" required></div>`;
+      if (k === 'support_whatsapp') return `<div class="field"><label>${esc(sp.label)}</label><input name="${k}" ${mobileAttrs} value="${esc(v)}"></div>`;
+      if (k === 'service_cities') return `<div class="field"><label>${esc(sp.label)}</label><input name="${k}" value="${esc(v)}" placeholder="Lahore, Sahiwal, Faisalabad"></div>`;
       return `<div class="field"><label>${esc(sp.label)}</label><textarea name="${k}" rows="3">${esc(v)}</textarea></div>`;
     };
     body.innerHTML = `
@@ -3059,6 +3091,60 @@ window.addEventListener('unhandledrejection', (e) => {
   reportError(r.message || String(r), r.stack);
 });
 
+// ---- Help & FAQ (public), in English and Urdu ---------------------------------
+const FAQ = [
+  ['What is ABC Rides?', 'ABC Rides connects people travelling between cities. Drivers who are going anyway share their empty seats, and passengers share the cost. It is not a taxi service.',
+    'اے بی سی رائیڈز کیا ہے؟', 'یہ ایک شہر سے دوسرے شہر جانے والوں کو آپس میں ملاتی ہے۔ جو ڈرائیور ویسے بھی جا رہا ہو وہ خالی سیٹیں دیتا ہے اور مسافر خرچہ بانٹتے ہیں۔ یہ ٹیکسی سروس نہیں ہے۔'],
+  ['Which cities does it cover?', () => `For now: ${esc(serviceCities().join(', ') || 'all major cities')}. More cities soon. Tell us on WhatsApp which route you need.`,
+    'کن شہروں میں چلتی ہے؟', () => `ابھی ${esc(serviceCities().join('، ') || 'بڑے شہروں')} کے درمیان۔ جلد مزید شہر شامل ہوں گے۔`],
+  ['How do I book a seat?', 'Search your cities and date, open a ride, choose seats (and your stop if the ride has stops on the way) and tap “Request seat”. The driver accepts, then you see their phone number and payment details. No ride yet? Post a ride request and drivers will offer you one.',
+    'سیٹ کیسے بک کروں؟', 'اپنے شہر اور تاریخ تلاش کریں، رائیڈ کھولیں، سیٹیں چنیں اور ”Request seat“ دبائیں۔ ڈرائیور قبول کرے تو آپ کو اس کا نمبر اور ادائیگی کی تفصیل نظر آ جائے گی۔ رائیڈ نہ ملے تو ”Ride request“ ڈال دیں، ڈرائیور آپ کو آفر بھیجیں گے۔'],
+  ['How do I offer a ride as a driver?', 'Register once as a driver (CNIC, driving licence and car photos; our team checks them). Then tap “Offer a ride”, choose the route, time, seats and fare per km.',
+    'ڈرائیور کے طور پر رائیڈ کیسے دوں؟', 'ایک بار ڈرائیور رجسٹریشن کریں (شناختی کارڈ، لائسنس اور گاڑی کی تصاویر، ہماری ٹیم چیک کرتی ہے)۔ پھر ”Offer a ride“ میں راستہ، وقت، سیٹیں اور فی کلومیٹر کرایہ لکھیں۔'],
+  ['How is the fare decided?', 'By distance: a fair rate per km per seat, within limits, adjusted for the car’s class and AC. Passengers joining on the way pay only for their kilometres. See “How fares work”.',
+    'کرایہ کیسے طے ہوتا ہے؟', 'فاصلے کے حساب سے: فی سیٹ فی کلومیٹر مناسب ریٹ، گاڑی کی کلاس اور اے سی کے مطابق۔ راستے میں بیٹھنے والا صرف اپنے کلومیٹر کا کرایہ دیتا ہے۔'],
+  ['How do I pay the driver?', 'Directly: cash, JazzCash, Easypaisa or bank transfer, as the ride says. ABC Rides never holds your fare.',
+    'ڈرائیور کو ادائیگی کیسے کروں؟', 'براہِ راست: نقد، جاز کیش، ایزی پیسہ یا بینک ٹرانسفر، جیسا رائیڈ پر لکھا ہو۔ کرایہ ہمارے پاس نہیں آتا۔'],
+  ['What does ABC Rides charge?', () => `Posting rides is free. When a booking is confirmed, a small fee is taken from your ABC Rides wallet (passengers ${settings.passenger_commission_pct}%, drivers ${settings.driver_commission_pct}%). Your first ${settings.free_confirmations} bookings are free. Top up the wallet in Profile → Wallet.`,
+    'اے بی سی رائیڈز کتنی فیس لیتی ہے؟', () => `رائیڈ ڈالنا مفت ہے۔ بکنگ کنفرم ہونے پر والٹ سے تھوڑی فیس کٹتی ہے (مسافر ${settings.passenger_commission_pct}٪، ڈرائیور ${settings.driver_commission_pct}٪)۔ پہلی ${settings.free_confirmations} بکنگز مفت ہیں۔`],
+  ['Is it safe?', 'Drivers are checked (CNIC, selfie, licence, car and number plate). Everyone has reviews and a reliability score. Women can choose women-only rides. During a trip use SOS to call 15/1122 or alert your emergency contact, and share your trip with family. Always check the number plate before you get in.',
+    'کیا یہ محفوظ ہے؟', 'ڈرائیوروں کی جانچ ہوتی ہے (شناختی کارڈ، سیلفی، لائسنس، گاڑی اور نمبر پلیٹ)۔ ہر کسی کے ریویو اور ریلائبلٹی اسکور ہوتے ہیں۔ خواتین صرف خواتین والی رائیڈ چن سکتی ہیں۔ سفر میں SOS سے 15 یا 1122 پر کال کریں۔ بیٹھنے سے پہلے نمبر پلیٹ ضرور چیک کریں۔'],
+  ['Why do I verify my email and CNIC?', 'Email verification stops fake accounts. CNIC verification (typed number, photos and a selfie, checked by our team) gives you a ✔ Verified badge, which drivers and passengers trust more.',
+    'ای میل اور شناختی کارڈ کی تصدیق کیوں؟', 'ای میل کی تصدیق جعلی اکاؤنٹس روکتی ہے۔ شناختی کارڈ کی تصدیق سے آپ کو ✔ Verified کا نشان ملتا ہے جس پر لوگ زیادہ بھروسہ کرتے ہیں۔'],
+  ['What if someone cancels?', 'Cancelling a confirmed trip lowers your reliability score (more if it is close to departure), and the other side’s app fee is refunded. Rides nobody booked expire by themselves.',
+    'اگر کوئی کینسل کر دے؟', 'کنفرم سفر کینسل کرنے سے ریلائبلٹی اسکور کم ہوتا ہے (روانگی کے قریب زیادہ)، اور دوسرے فریق کی فیس واپس ہو جاتی ہے۔'],
+  ['Can the driver pick me up from home?', 'If the ride offers it: tick “Pick me up from home” and share your location. It costs a little extra per km, paid to the driver.',
+    'کیا ڈرائیور گھر سے لے سکتا ہے؟', 'اگر رائیڈ میں یہ سہولت ہو تو ”Pick me up from home“ پر نشان لگا کر اپنی لوکیشن دیں۔ اس کا تھوڑا اضافی کرایہ ڈرائیور کو ملتا ہے۔'],
+  ['I forgot my password', 'On the log-in page tap “Forgot password?” and we email you a code. No email? Message us on WhatsApp.',
+    'پاس ورڈ بھول گیا ہوں', 'لاگ اِن صفحے پر ”Forgot password?“ دبائیں، ہم ای میل پر کوڈ بھیجیں گے۔'],
+  ['How do I update the app?', 'Updates arrive by themselves. To check by hand: Profile → App version → Check for updates.',
+    'ایپ اپڈیٹ کیسے کروں؟', 'اپڈیٹ خود آ جاتی ہے۔ خود چیک کرنے کے لیے: Profile → App version → Check for updates۔'],
+  ['How do I delete my account?', 'Profile → Delete account. Cancel any upcoming trips first.',
+    'اکاؤنٹ کیسے ختم کروں؟', 'Profile → Delete account۔ پہلے آنے والے سفر کینسل کر دیں۔'],
+];
+
+views.help = async (page) => {
+  const text = (v) => (typeof v === 'function' ? v() : esc(v));
+  const wa = whatsappButton('I have a question about the app.');
+  page.innerHTML = `
+    <h1>Help & FAQ <span class="muted" lang="ur" dir="rtl">· مدد</span></h1>
+    <div class="card help-contact">
+      <h3>Need help? <span lang="ur" dir="rtl">مدد چاہیے؟</span></h3>
+      ${wa ? `<p class="small">Message our team on WhatsApp; we usually reply within a few hours.</p>${wa}`
+    : '<p class="small muted">Read the answers below, or use “Report” on a profile for safety problems.</p>'}
+      <p class="small muted" style="margin-top:8px">Emergency on the road: Police <a href="tel:15">15</a> · Rescue <a href="tel:1122">1122</a> · Motorway Police <a href="tel:130">130</a></p>
+    </div>
+    <div class="faq">
+      ${FAQ.map(([q, a, qUr, aUr]) => `
+      <details class="card">
+        <summary><b>${esc(q)}</b><span class="faq-ur" lang="ur" dir="rtl">${esc(qUr)}</span></summary>
+        <p class="small">${text(a)}</p>
+        <p class="small faq-ur" lang="ur" dir="rtl">${text(aUr)}</p>
+      </details>`).join('')}
+    </div>
+    <p class="small muted legal-links"><a href="#/how-it-works">How fares work</a> · <a href="terms.html">Terms</a> · <a href="privacy.html">Privacy</a></p>`;
+};
+
 // ---- How fares and reliability work (public) ---------------------------------
 views['how-it-works'] = async (page) => {
   await loadCars();
@@ -3075,10 +3161,10 @@ views['how-it-works'] = async (page) => {
       <p class="small">Every car gets a class from its model, body type and engine (drivers pick from our car list). The class sets the fare range per km.
         A standard AC car is the base: <b>Rs ${s.fare_per_km}/km per seat</b> for shared rides (allowed Rs ${s.fare_min_per_km}–${s.fare_max_per_km}).</p>
       <div class="table-wrap"><table class="earn hiw">
-        <thead><tr><th>Class</th><th>Shared, per seat</th><th>Private, whole car</th></tr></thead>
+        <thead><tr><th>Class</th><th>Shared, per seat</th>${s.private_rides_enabled ? '<th>Private, whole car</th>' : ''}</tr></thead>
         <tbody>${carCatalog.classes.map((c) => `<tr><td><b>${esc(c.label)}</b> ×${c.factor}<div class="muted">${esc(c.body)}<br>e.g. ${esc(c.examples)}</div></td>
           <td>Rs ${per(s.fare_per_km, c.factor)}/km<div class="muted">${per(s.fare_min_per_km, c.factor)}–${per(s.fare_max_per_km, c.factor)}</div></td>
-          <td>Rs ${per(s.private_per_km, c.factor)}/km<div class="muted">${per(s.private_min_per_km, c.factor)}–${per(s.private_max_per_km, c.factor)}</div></td></tr>`).join('')}</tbody>
+          ${s.private_rides_enabled ? `<td>Rs ${per(s.private_per_km, c.factor)}/km<div class="muted">${per(s.private_min_per_km, c.factor)}–${per(s.private_max_per_km, c.factor)}</div></td>` : ''}</tr>`).join('')}</tbody>
       </table></div>
       <ul class="small">
         <li><b>No AC:</b> fares × ${carCatalog.no_ac_factor} (${pct(1 - carCatalog.no_ac_factor)} less) than the same car with AC.</li>
@@ -3090,7 +3176,7 @@ views['how-it-works'] = async (page) => {
       </ul>
     </div>
 
-    <div class="card">
+    ${s.private_rides_enabled ? `<div class="card">
       <h3>🔒 Private rides</h3>
       <ul class="small">
         <li>The whole car for one group only, straight from pickup to drop-off: no other passengers, no stops on the way.</li>
@@ -3098,7 +3184,7 @@ views['how-it-works'] = async (page) => {
         <li>Up to as many people as the car has passenger seats.${s.private_requires_id ? ' Passengers need a verified ID (CNIC) to book.' : ''}</li>
         <li>No student discount; booking fee and commission work as for shared rides.</li>
       </ul>
-    </div>
+    </div>` : ''}
 
     <div class="card">
       <h3>💳 App fees</h3>
@@ -3145,7 +3231,7 @@ function parseHash() {
 
 const NAV_GROUP = {
   search: 'home', requests: 'offer', 'request-offer': 'offer', register: 'login', forgot: 'login', chat: 'inbox', admin: 'profile', user: 'home', ride: 'trips',
-  'verify-phone': 'profile', 'verify-email': 'profile', 'verify-id': 'profile', driver: 'offer', wallet: 'profile', 'accept-terms': 'profile', 'how-it-works': 'home',
+  'verify-phone': 'profile', 'verify-email': 'profile', 'verify-id': 'profile', driver: 'offer', wallet: 'profile', 'accept-terms': 'profile', 'how-it-works': 'home', help: 'profile',
 };
 
 function renderNav(active) {

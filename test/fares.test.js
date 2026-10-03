@@ -13,6 +13,7 @@ before(async () => {
   ({ db, call, register, close } = await startServer({
     settings: {
       require_email_verification: false,
+      service_cities: '',
       require_driver_approval: false,
       student_price_requires_verification: false,
       driver_commission_pct: 10,

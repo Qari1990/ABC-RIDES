@@ -1,4 +1,5 @@
 const { bad } = require('./errors');
+const { validMobile } = require('./phone');
 
 // Admin-controlled policy. Each setting has a default and a validator; the
 // admin panel edits them and every request reads the current values.
@@ -37,9 +38,11 @@ const SPEC = {
   fare_factor_van: { default: 95, min: 50, max: 200, label: 'Fare for vans / MPVs (% of standard)' },
   no_ac_fare_factor: { default: 85, min: 50, max: 100, label: 'Fare for cars without AC (% of the same car with AC)' },
   // Private rides: the whole car for one group, priced per km for the car.
-  private_per_km: { default: 18, min: 1, max: 200, label: 'Suggested private ride fare per km, whole car (Rs)' },
-  private_min_per_km: { default: 12, min: 1, max: 200, label: 'Lowest private ride fare per km (Rs)' },
-  private_max_per_km: { default: 30, min: 1, max: 300, label: 'Highest private ride fare per km (Rs)' },
+  private_rides_enabled: { default: false, label: 'Allow private rides (whole car for one group). Check the transport permit rules first' },
+  // A private trip has to pay for the car's fuel (about Rs 30/km), tolls and the empty drive back.
+  private_per_km: { default: 45, min: 1, max: 300, label: 'Suggested private ride fare per km, whole car (Rs)' },
+  private_min_per_km: { default: 30, min: 1, max: 300, label: 'Lowest private ride fare per km (Rs)' },
+  private_max_per_km: { default: 70, min: 1, max: 300, label: 'Highest private ride fare per km (Rs)' },
   private_requires_id: { default: true, label: 'Private rides only for ID-verified passengers' },
   home_pickup_per_km: { default: 50, min: 0, max: 1000, label: 'Home pickup/drop charge per km (Rs)' },
   home_pickup_min: { default: 150, min: 0, max: 10000, label: 'Minimum home pickup/drop charge (Rs)' },
@@ -56,6 +59,11 @@ const SPEC = {
   require_driver_approval: { default: true, label: 'Drivers must be approved before posting rides' },
   student_price_requires_verification: { default: true, label: 'Student prices only for verified students' },
   notify_admins_of_requests: { default: true, label: 'Tell admins about every new passenger ride request' },
+  service_cities: {
+    default: 'Lahore, Sahiwal, Faisalabad', maxLength: 300,
+    label: 'Cities where rides and requests can start and end (comma separated; empty = everywhere)',
+  },
+  support_whatsapp: { default: '', maxLength: 20, label: 'WhatsApp support number, e.g. 0300 1234567 (empty = hidden)' },
   topup_accounts: {
     default: 'JazzCash: 03XX-XXXXXXX (ABC Rides)\nEasypaisa: 03XX-XXXXXXX (ABC Rides)',
     maxLength: 500, label: 'Accounts users send top-ups to',
@@ -80,6 +88,8 @@ function coerce(key, value) {
     return value;
   }
   if (typeof value !== 'string' || value.length > spec.maxLength) throw bad(`${spec.label} must be text up to ${spec.maxLength} characters`);
+  if (key === 'support_whatsapp' && value.trim()) return validMobile(value, 'WhatsApp support number');
+  if (key === 'service_cities') return value.split(',').map((c) => c.trim()).filter(Boolean).join(', ');
   return value.trim();
 }
 
@@ -102,4 +112,16 @@ const settingsSpec = () => Object.fromEntries(Object.entries(SPEC).map(([k, s]) 
   label: s.label, type: typeof s.default, options: s.options, min: s.min, max: s.max,
 }]));
 
-module.exports = { getSettings, setSettings, settingsSpec };
+/** Rides and requests start and end in these cities (the launch area); everywhere when empty. */
+function checkServiceArea(settings, ...cities) {
+  const allowed = String(settings.service_cities || '').split(',').map((c) => c.trim().toLowerCase()).filter(Boolean);
+  if (!allowed.length) return;
+  if (cities.every((c) => allowed.includes(String(c || '').trim().toLowerCase()))) return;
+  throw bad(`For now ABC Rides runs between ${settings.service_cities.replace(/, ([^,]*)$/, ' and $1')}. More cities soon!`);
+}
+
+function checkPrivateAllowed(settings) {
+  if (!settings.private_rides_enabled) throw bad('Private rides are not available yet. Post or request a shared ride instead.');
+}
+
+module.exports = { getSettings, setSettings, settingsSpec, checkServiceArea, checkPrivateAllowed };

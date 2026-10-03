@@ -8,7 +8,7 @@ const { estimateRoute, cityRoadKm, placeKm, minutesFor } = require('../geo');
 const {
   roundFare, stopsOf, hasStops, segmentKm, segmentFare, findSegment, checkSegment, homeCharge,
 } = require('../fares');
-const { getSettings } = require('../settings');
+const { getSettings, checkServiceArea, checkPrivateAllowed } = require('../settings');
 const { completeRide } = require('../lifecycle');
 const { validateVehicle, fareRange, describeVehicle, shapeVehicle } = require('../cars');
 const { requireBookingIdentity, requireDriver, isVerifiedStudent, instantBooking } = require('../policy');
@@ -272,9 +272,11 @@ module.exports = function ridesRouter(db) {
       car = tempVehicle;
     }
     const isPrivate = !!b.private;
+    if (isPrivate) checkPrivateAllowed(settings);
     if (isPrivate && Array.isArray(b.stops) && b.stops.length > 2) throw bad('A private ride goes straight from pickup to drop-off, without stops');
     const range = fareRange(settings, car, { isPrivate });
     const { from, to, stops, km, farePerKm, pricePerSeat } = resolveRoute(settings, b, range);
+    checkServiceArea(settings, from, to);
     const homePickup = b.home_pickup ? 1 : 0;
     const homeDrop = b.home_drop ? 1 : 0;
     if ((homePickup || homeDrop) && !stops) throw bad('Home pickup/drop needs pickup and drop-off points chosen from the list');

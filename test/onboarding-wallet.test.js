@@ -13,6 +13,8 @@ const FAKE_PNG = `data:image/png;base64,${Buffer.from('<script>alert(1)</script>
 // Production defaults: everything on.
 const STRICT = {
   require_email_verification: true,
+  service_cities: '',
+  private_rides_enabled: true,
   require_driver_approval: true,
   student_price_requires_verification: true,
   driver_commission_pct: 0,

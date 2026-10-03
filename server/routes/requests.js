@@ -2,7 +2,7 @@ const express = require('express');
 const { requireUser } = require('../auth');
 const { HttpError, bad, str, int, isoDate } = require('../errors');
 const { publicUser } = require('./users');
-const { getSettings } = require('../settings');
+const { getSettings, checkServiceArea, checkPrivateAllowed } = require('../settings');
 const { requirePhone } = require('../policy');
 const { canonicalCity, CITY_CENTRES, haversineKm } = require('../geo');
 const { findSegment } = require('../fares');
@@ -82,7 +82,9 @@ module.exports = function requestsRouter(db) {
     if (open >= 10) throw bad('You can have at most 10 open ride requests');
     const fromPlace = pointIn(b.from_place_id, from, 'Pickup');
     const toPlace = pointIn(b.to_place_id, to, 'Drop-off');
+    checkServiceArea(getSettings(db), from, to);
     const isPrivate = !!b.private;
+    if (isPrivate) checkPrivateAllowed(getSettings(db));
     if (isPrivate && getSettings(db).private_requires_id && req.user.verification_status !== 'verified') {
       const err = new HttpError(403, 'Private rides are for ID-verified passengers. Verify your CNIC first.');
       err.code = 'id_required';

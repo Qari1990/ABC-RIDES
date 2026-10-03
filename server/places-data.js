@@ -14,6 +14,7 @@ module.exports = [
   ['Faisalabad', 'Clock Tower (Ghanta Ghar)', 31.4187, 73.0791],
   ['Faisalabad', 'D-Ground, Peoples Colony', 31.3990, 73.1080],
   ['Faisalabad', 'University of Agriculture', 31.4300, 73.0700],
+  ['Faisalabad', 'Government College University (GCUF)', 31.4161, 73.0700],
 
   ['Gujranwala', 'City centre (Sheranwala Bagh)', 32.1617, 74.1883],
   ['Gujranwala', 'GT Road, Chanda Qila', 32.1870, 74.1960],

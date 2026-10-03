@@ -56,6 +56,8 @@ function localDateTime(daysAhead, hour, minute = 0) {
 
 before(async () => {
   db = openDb(path.join(tmp, 'e2e.db'));
+  // The scenarios travel all over Pakistan and include private rides.
+  setSettings(db, { service_cities: '', private_rides_enabled: true });
   server = createApp(db, { uploadDir: path.join(tmp, 'uploads') }).listen(0);
   await new Promise((r) => server.once('listening', r));
   base = `http://127.0.0.1:${server.address().port}/`;
@@ -801,8 +803,8 @@ test('19. private ride in a temporary car: a group books the whole car, then bot
   await sana.page.fill('#temp-car [name=car_plate]', 'LEC-777');
   await sana.page.check('[name=temp_vehicle_declaration]');
   await toStep(sana.page, 3);
-  // Private fare for an SUV: Rs 18/km × 1.3.
-  assert.equal(await sana.page.inputValue('#ofk'), '23.4');
+  // Private fare for an SUV: Rs 45/km × 1.3.
+  assert.equal(await sana.page.inputValue('#ofk'), '58.5');
   assert.match(await sana.page.textContent('#fare-hint'), /suv car/i);
   await publish(sana.page);
   await sana.page.waitForURL(/#\/ride\/\d+/);
@@ -859,17 +861,17 @@ test('20. private car request: a driver offers a price for the whole car', async
 
   await sana.go(`/request-offer/${reqId}`, '#req-offer');
   assert.match(await sana.page.textContent('#req-offer'), /Price for the whole car/);
-  await sana.page.fill('#rop', '9000');
+  await sana.page.fill('#rop', '15000');
   await sana.page.click('#req-offer [type=submit]');
   await sana.toast(/./);
   await omar.go('/trips?tab=requests', '[data-action=accept-offer]');
-  assert.match(await omar.page.textContent('#list'), /Private car · 3 people[\s\S]*Rs 9,000[\s\S]*for the car/);
+  assert.match(await omar.page.textContent('#list'), /Private car · 3 people[\s\S]*Rs 15,000[\s\S]*for the car/);
   await omar.page.click('[data-action=accept-offer]');
   await omar.page.waitForURL(/#\/ride\/\d+/);
   const ride = rideRow(rideIdFromUrl(omar.page));
   assert.equal(ride.private, 1);
-  assert.equal(ride.price_per_seat, 9000);
-  assert.match(await omar.page.textContent('#view'), /Whole car · 3 people/);
+  assert.equal(ride.price_per_seat, 15000);
+  await omar.page.waitForSelector('text=Whole car · 3 people');
 });
 
 test('21. a permanent car change waits for admin approval', async () => {
@@ -910,6 +912,33 @@ test('22. updates: Profile → Check for updates, and a bar when a new version i
   // The server got a new web version while the app was open.
   await zara.page.evaluate(() => { settings.build = 'older'; return checkAppUpdate(); });
   await zara.page.waitForSelector('#update-bar >> text=A new version of ABC Rides is ready');
+});
+
+test('23. Help & FAQ with WhatsApp support, and the launch routes on the home page', async () => {
+  const admin = users.Admin;
+  await admin.go('/admin?tab=settings', '#settings');
+  await admin.page.fill('#settings [name=support_whatsapp]', '+92 321 7654321');
+  await admin.page.fill('#settings [name=service_cities]', 'Lahore, Sahiwal, Faisalabad');
+  await admin.page.click('#settings [type=submit]');
+  await admin.toast(/Settings saved/);
+  assert.equal(getSettings(db).support_whatsapp, '0321 7654321');
+
+  const zara = users['Zara Traveller'];
+  await zara.page.reload();
+  await zara.go('/help', '.faq');
+  const wa = await zara.page.getAttribute('.help-contact a.whatsapp', 'href');
+  assert.match(wa, /^https:\/\/wa\.me\/923217654321\?text=/);
+  assert.match(decodeURIComponent(wa), /Zara Traveller, account #\d+/);
+  await zara.page.click('.faq summary:has-text("Which cities")');
+  assert.match(await zara.page.textContent('.faq'), /For now: Lahore, Sahiwal, Faisalabad[\s\S]*ابھی/);
+  await zara.go('/', '.launch-routes');
+  assert.equal(await zara.page.locator('.launch-routes .chip').count(), 6, 'three routes, both ways');
+  await zara.page.click('.launch-routes .chip:has-text("Sahiwal → Faisalabad")');
+  await zara.page.waitForURL(/#\/search\?from=Sahiwal&to=Faisalabad/);
+  // Posting outside the launch area is refused with a clear message.
+  const res = await zara.page.evaluate(() => api('/ride-requests', { method: 'POST', body: { from_city: 'Karachi', to_city: 'Hyderabad', earliest_at: new Date(Date.now() + 864e5).toISOString(), latest_at: new Date(Date.now() + 9e7).toISOString(), seats: 1 } }).catch((e) => e.message));
+  assert.match(res, /between Lahore, Sahiwal and Faisalabad/);
+  setSettings(db, { service_cities: '', support_whatsapp: '' });
 });
 
 test('no JavaScript errors in any page', () => {

@@ -88,8 +88,8 @@ test('private rides: the whole car for one ID-verified group', async () => {
   assert.equal(ride.private, true);
   assert.equal(ride.seats_total, 1);
   assert.equal(ride.car_seats, 4);
-  assert.equal(ride.fare_per_km, 18, 'private fare per km for a standard car');
-  assert.ok(ride.price_per_seat > 6000, 'price is for the whole car');
+  assert.equal(ride.fare_per_km, 45, 'private fare per km for a standard car: covers fuel, tolls and the drive back');
+  assert.ok(ride.price_per_seat > 15000, 'price is for the whole car');
 
   const family = await register({ traveler_type: 'traveler' });
   const noId = await call('POST', `/rides/${ride.id}/bookings`, { token: family.token, body: { seats: 1, party_size: 3 } });
@@ -106,4 +106,36 @@ test('private rides: the whole car for one ID-verified group', async () => {
   // Private rides only match the whole route in search.
   assert.equal((await call('GET', '/rides?from=Lahore&to=Islamabad')).body.some((r) => r.id === ride.id), false, 'full now');
   assert.equal((await call('POST', '/rides', { token: driver.token, body: { ...(await stopsBody({ private: true })), stops: [...(await stopsBody()).stops.slice(0, 1), (await call('GET', '/places?city=Gujranwala')).body[0].id, (await stopsBody()).stops[1]] } })).status, 400, 'no stops on a private ride');
+});
+
+test('launch area: rides and requests start and end in the service cities; private rides off by default', async () => {
+  const driver = await register();
+  giveCar(driver, { make: 'Honda', model: 'City', plate: 'LEF-101', seats: 4, body: 'sedan', cc: 1300, cls: 'standard' });
+  const point = async (city) => (await call('GET', `/places?city=${city}`)).body[0].id;
+  const body = async (from, to, extra = {}) => ({ stops: [await point(from), await point(to)], departure_at: inHours(30), seats_total: 3, ...extra });
+  setSettings(db, { service_cities: 'Lahore, Sahiwal , Faisalabad,', private_rides_enabled: false });
+  try {
+    const outside = await call('POST', '/rides', { token: driver.token, body: await body('Lahore', 'Islamabad') });
+    assert.equal(outside.status, 400);
+    assert.match(outside.body.error, /between Lahore, Sahiwal and Faisalabad/);
+    for (const [from, to] of [['Lahore', 'Sahiwal'], ['Sahiwal', 'Faisalabad'], ['Faisalabad', 'Lahore']]) {
+      const ok = await call('POST', '/rides', { token: driver.token, body: await body(from, to) });
+      assert.equal(ok.status, 201, `${from} → ${to}: ${JSON.stringify(ok.body)}`);
+    }
+    const priv = await call('POST', '/rides', { token: driver.token, body: await body('Lahore', 'Sahiwal', { private: true }) });
+    assert.match(priv.body.error, /Private rides are not available yet/);
+
+    const passenger = await register();
+    const req = (from, to, extra = {}) => call('POST', '/ride-requests', { token: passenger.token, body: {
+      from_city: from, to_city: to, earliest_at: inHours(20), latest_at: inHours(26), seats: 1, ...extra } });
+    assert.equal((await req('Karachi', 'Hyderabad')).status, 400);
+    assert.equal((await req('sahiwal', 'faisalabad')).status, 201, 'city names in any case');
+    assert.match((await req('Lahore', 'Faisalabad', { private: true })).body.error, /not available yet/);
+
+    // The WhatsApp support number must be a real mobile number.
+    assert.throws(() => setSettings(db, { support_whatsapp: '12345' }), /11 digits/);
+    assert.equal(setSettings(db, { support_whatsapp: '+92 300 1234567' }).support_whatsapp, '0300 1234567');
+  } finally {
+    setSettings(db, { service_cities: '', private_rides_enabled: true, support_whatsapp: '' });
+  }
 });

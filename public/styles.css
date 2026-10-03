@@ -504,3 +504,9 @@ table.hiw td, table.hiw th { white-space: normal; }
 table.hiw td:not(:first-child) { white-space: nowrap; text-align: right; }
 .digit-hint { display: block; margin-top: 4px; color: var(--muted); }
 .digit-hint.ok { color: var(--ok); font-weight: 600; }
+.launch-routes { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 4px 0 16px; }
+.chip { display: inline-block; padding: 6px 12px; border-radius: 999px; background: var(--brand-soft); color: var(--brand-strong); font-size: .85rem; font-weight: 600; text-decoration: none; }
+.btn.whatsapp { background: #128c4b; color: #fff; border-color: #128c4b; }
+.faq details summary { cursor: pointer; }
+.faq-ur { display: block; font-family: 'Noto Nastaliq Urdu', 'Jameel Noori Nastaleeq', serif; line-height: 2; text-align: right; color: var(--muted); }
+summary .faq-ur { font-size: .95rem; }

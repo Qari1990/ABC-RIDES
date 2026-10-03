@@ -65,6 +65,7 @@ const KNOWN_ROAD_KM = {
   'Islamabad|Lahore': 375,
   'Lahore|Rawalpindi': 380,
   'Faisalabad|Lahore': 185,
+  'Faisalabad|Sahiwal': 120,
   'Lahore|Multan': 340,
   'Gujranwala|Lahore': 70,
   'Lahore|Sialkot': 130,

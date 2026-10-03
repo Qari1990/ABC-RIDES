@@ -5,6 +5,10 @@ Drivers who are already going between cities post their empty seats; passengers 
 
 ## Features
 
+- **Launch area**: rides and requests start and end in the cities set in **Admin → Settings → Launch area**
+  (default Lahore, Sahiwal and Faisalabad; empty = everywhere). The home page shows those routes as quick links.
+- **Help & FAQ** (`#/help`): common questions in English and Urdu, emergency numbers, and a WhatsApp support button
+  (number set in **Admin → Settings → Support**; hidden when empty). People on a trip can message support about it.
 - **Terms & disclaimer at onboarding**: sign-up needs the terms accepted (platform only, drivers responsible for
   their car and driving, limited liability, emergency numbers); drivers also sign a declaration. When the terms
   change (`server/terms.js`), everyone accepts the new version before booking or posting.
@@ -15,8 +19,8 @@ Drivers who are already going between cities post their empty seats; passengers 
 - **Fares by car**: each class (economy ×0.9, standard ×1, premium ×1.2, SUV ×1.3, van ×0.95; no AC ×0.85, all
   admin settings) scales the suggested and allowed per-km fare. Everyone can read the rules on **How fares work**
   (`#/how-it-works`), with reliability points and ride timings.
-- **Private rides**: the whole car for one group, straight from pickup to drop-off, one price for the car
-  (default Rs 18/km standard car, Rs 12–30 allowed); passengers book with the number of people and need a verified
+- **Private rides** (off by default; **Admin → Settings → Private rides**, check transport permit rules first): the whole car for one group, straight from pickup to drop-off, one price for the car
+  (default Rs 45/km standard car, Rs 30–70 allowed, so fuel, tolls and the drive back are covered); passengers book with the number of people and need a verified
   ID (setting). Passengers can also request a private car and drivers offer a price for it.
 - **Ride lifecycle**: unbooked rides expire 30 min after departure, unanswered requests lapse, rides with
   passengers complete by themselves some hours after arrival and everyone is asked to review; ride requests close
