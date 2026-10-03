@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Single-colour car for Android 13+ themed icons. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp" android:viewportWidth="108" android:viewportHeight="108">
+    <group android:scaleX="1.45" android:scaleY="1.45" android:translateX="7.6" android:translateY="3.25">
+        <path android:fillColor="#FFFFFFFF"
+            android:pathData="M14,38l4,-11c1,-3 3,-5 6,-5h16c3,0 5,2 6,5l4,11v8a2,2 0,0 1,-2 2h-3a2,2 0,0 1,-2 -2v-2H21v2a2,2 0,0 1,-2 2h-3a2,2 0,0 1,-2 -2z" />
+    </group>
+</vector>

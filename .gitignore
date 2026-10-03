@@ -13,6 +13,7 @@ captures/
 .externalNativeBuild/
 .cxx/
 *.apk
+!public/downloads/abc-rides.apk
 output.json
 
 # IntelliJ
@@ -31,3 +32,8 @@ google-services.json
 
 # Android Profiling
 *.hprof
+
+# Node
+node_modules/
+data/
+android/build/

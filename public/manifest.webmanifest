@@ -1,0 +1,10 @@
+{
+  "name": "ABC Rides",
+  "short_name": "ABC Rides",
+  "description": "Intercity ride sharing for professionals, students and regular travellers",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f2f4fa",
+  "theme_color": "#0b1a4a",
+  "icons": [{ "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }]
+}
