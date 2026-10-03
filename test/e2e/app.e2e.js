@@ -57,7 +57,7 @@ function localDateTime(daysAhead, hour, minute = 0) {
 before(async () => {
   db = openDb(path.join(tmp, 'e2e.db'));
   // The scenarios travel all over Pakistan and include private rides.
-  setSettings(db, { service_cities: '', private_rides_enabled: true });
+  setSettings(db, { service_cities: '', private_rides_enabled: true, fees_enabled: true });
   server = createApp(db, { uploadDir: path.join(tmp, 'uploads') }).listen(0);
   await new Promise((r) => server.once('listening', r));
   base = `http://127.0.0.1:${server.address().port}/`;

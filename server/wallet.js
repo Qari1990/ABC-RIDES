@@ -46,6 +46,7 @@ function shareDiscount(db, settings, rideId, seats, excludeBookingId = 0) {
 // What a user pays when a booking with this fare is confirmed. The fare is
 // the seat price only: home pickup/drop charges go to the driver untouched.
 function confirmationFee(db, settings, user, fare, role, { discountPct = 0 } = {}) {
+  if (!settings.fees_enabled) return { total: 0, commission: 0, penalty: 0, free: true, pct: 0, discountPct: 0 };
   const pct = role === 'driver' ? settings.driver_commission_pct : settings.passenger_commission_pct;
   const free = freeConfirmationsLeft(db, settings, user.id) > 0;
   const commission = free ? 0 : Math.ceil((fare * pct * (100 - discountPct)) / 10000);
@@ -55,6 +56,7 @@ function confirmationFee(db, settings, user, fare, role, { discountPct = 0 } = {
 
 // Fee to post one ride: free unless the driver's reliability is low.
 function postingFee(settings, user) {
+  if (!settings.fees_enabled) return 0;
   return lowReliability(settings, user) ? settings.low_reliability_fee : 0;
 }
 

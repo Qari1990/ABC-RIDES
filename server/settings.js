@@ -8,6 +8,8 @@ const SPEC = {
     default: 'driver_choice', options: ['driver_choice', 'manual', 'instant'],
     label: 'How bookings are accepted',
   },
+  // Off for the launch: no commission, booking fee or low-reliability fee at all.
+  fees_enabled: { default: false, label: 'Charge app fees (commission, booking fee, low-reliability fee). Off = ABC Rides is free' },
   driver_commission_pct: { default: 5, min: 0, max: 50, label: 'Driver commission (%)' },
   passenger_commission_pct: { default: 2, min: 0, max: 50, label: 'Passenger booking fee (%)' },
   free_confirmations: { default: 3, min: 0, max: 1000, label: 'Free confirmed bookings per user' },

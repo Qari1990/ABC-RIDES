@@ -13,6 +13,7 @@ const FAKE_PNG = `data:image/png;base64,${Buffer.from('<script>alert(1)</script>
 // Production defaults: everything on.
 const STRICT = {
   require_email_verification: true,
+  fees_enabled: true,
   service_cities: '',
   private_rides_enabled: true,
   require_driver_approval: true,
@@ -475,5 +476,25 @@ test('forgot password by email (Brevo)', async () => {
   } finally {
     for (const k of ['BREVO_API_KEY', 'EMAIL_FROM', 'EMAIL_API_URL']) delete process.env[k];
     brevo.close();
+  }
+});
+
+test('with app fees switched off, nobody pays commission, booking or low-reliability fees', async () => {
+  const { setSettings } = require('../server/settings');
+  setSettings(db, { fees_enabled: false, free_confirmations: 0 });
+  try {
+    const driver = await onboard({ driver: true });
+    const passenger = await onboard();
+    db.prepare('UPDATE users SET reliability = 40 WHERE id IN (?, ?)').run(driver.user.id, passenger.user.id);
+    const before = [await balance(driver), await balance(passenger)];
+    const posted = await call('POST', '/rides', { token: driver.token, body: rideBody() });
+    assert.equal(posted.status, 201, 'no posting fee even with low reliability');
+    const booking = await call('POST', `/rides/${posted.body[0].id}/bookings`, { token: passenger.token, body: { seats: 1 } });
+    assert.equal(booking.status, 201, JSON.stringify(booking.body));
+    if (booking.body.status !== 'confirmed') assert.equal((await call('POST', `/bookings/${booking.body.id}/confirm`, { token: driver.token })).status, 200);
+    assert.deepEqual([await balance(driver), await balance(passenger)], before);
+    assert.equal((await call('GET', '/settings')).body.fees_enabled, false);
+  } finally {
+    setSettings(db, { fees_enabled: true, free_confirmations: 3 });
   }
 });

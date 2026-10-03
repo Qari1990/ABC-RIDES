@@ -49,7 +49,7 @@ public class MainActivity extends Activity {
     private static final String SETUP_PAGE = "file:///android_asset/setup.html";
     private static final int REQUEST_FILE = 1;
     private static final int REQUEST_LOCATION = 2;
-    private static final String BRAND = "#0b7a5e";
+    private static final String BRAND = "#0b1a4a";
     private static final int REQUEST_NOTIFY = 3;
     private static final int REQUEST_VOICE = 4;
     /** Intent extra with an app page to open, e.g. "/chat/12" (from a notification). */
@@ -148,15 +148,18 @@ public class MainActivity extends Activity {
     }
 
     /**
+     * Back works like other apps: from any page it goes to the home page, and
+     * on the home page it leaves the app.
+     *
      * Android 16+ no longer calls onBackPressed() for apps targeting it; the
      * back gesture goes to registered OnBackInvokedCallbacks instead. Register
-     * one while the page has history (so back goes to the previous screen) and
-     * remove it otherwise (so back leaves the app with the system animation).
+     * one while away from home (so back goes home) and remove it on the home
+     * page (so back leaves the app with the system animation).
      * Done through reflection so the app still builds against older SDKs.
      */
     private void updateBackHandling() {
         if (Build.VERSION.SDK_INT < 33) return;
-        boolean want = web.canGoBack();
+        boolean want = awayFromHome() || (onSetupPage() && web.canGoBack());
         if (want == backRegistered) return;
         try {
             Class<?> type = Class.forName("android.window.OnBackInvokedCallback");
@@ -167,7 +170,7 @@ public class MainActivity extends Activity {
                     public Object invoke(Object proxy, Method method, Object[] args) {
                         String name = method.getName();
                         if (name.equals("onBackInvoked")) {
-                            if (web.canGoBack()) web.goBack();
+                            handleBack();
                             return null;
                         }
                         if (name.equals("hashCode")) return System.identityHashCode(proxy);
@@ -187,6 +190,35 @@ public class MainActivity extends Activity {
         } catch (Exception e) {
             // Older behaviour (onBackPressed) still applies.
         }
+    }
+
+    /** On an app page other than home (e.g. #/ride/12): back then goes home. */
+    private boolean awayFromHome() {
+        String url = web.getUrl();
+        if (url == null || onSetupPage()) return false;
+        int hash = url.indexOf('#');
+        String route = hash < 0 ? "" : url.substring(hash + 1);
+        int query = route.indexOf('?');
+        if (query >= 0) route = route.substring(0, query);
+        return !(route.isEmpty() || route.equals("/"));
+    }
+
+    private boolean onSetupPage() {
+        String url = web.getUrl();
+        return url != null && url.startsWith("file:");
+    }
+
+    /** Back: to the home page, or out of the app when already there. */
+    private boolean handleBack() {
+        if (awayFromHome()) {
+            web.evaluateJavascript("location.hash = '#/'", null);
+            return true;
+        }
+        if (onSetupPage() && web.canGoBack()) {
+            web.goBack();
+            return true;
+        }
+        return false;
     }
 
     private SharedPreferences prefs() {
@@ -461,11 +493,7 @@ public class MainActivity extends Activity {
     @Override
     @SuppressWarnings("deprecation")
     public void onBackPressed() {
-        if (web.canGoBack()) {
-            web.goBack();
-        } else {
-            super.onBackPressed();
-        }
+        if (!handleBack()) super.onBackPressed();
     }
 
     @Override

@@ -91,7 +91,7 @@ async function routeMap(el, stops, { board = 0, alight = stops.length - 1, homes
       const road = legs[i - 1];
       const mine = i > board && i <= alight;
       L.polyline(road || [pts[i - 1], pts[i]], mine
-        ? { color: '#0b7a5e', weight: 5, opacity: 0.9, dashArray: road ? null : '8 8' }
+        ? { color: '#2445d6', weight: 5, opacity: 0.9, dashArray: road ? null : '8 8' }
         : { color: '#94a3b8', weight: 4, opacity: 0.9, dashArray: road ? null : '6 8' }).addTo(lines);
     }
   };
@@ -158,7 +158,7 @@ async function locationPicker(el, { around, radiusKm, value, onPick }) {
   const { L, map } = await createMap(el, { center: [around.lat, around.lon], zoom: 13 });
   L.marker([around.lat, around.lon], { icon: pin(L, 'A', 'start'), title: around.name }).bindTooltip(around.name).addTo(map);
   if (radiusKm) {
-    const circle = L.circle([around.lat, around.lon], { radius: radiusKm * 1000, color: '#0b7a5e', weight: 1, fillOpacity: 0.06 }).addTo(map);
+    const circle = L.circle([around.lat, around.lon], { radius: radiusKm * 1000, color: '#2445d6', weight: 1, fillOpacity: 0.06 }).addTo(map);
     map.fitBounds(circle.getBounds(), { padding: [10, 10], animate: false });
   }
   let marker = null;

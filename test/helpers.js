@@ -10,6 +10,7 @@ const { setSettings } = require('../server/settings');
 // test server switches those off; tests for them turn them back on.
 const RELAXED = {
   require_email_verification: false,
+  fees_enabled: true,
   // Tests use routes all over Pakistan, and private rides.
   service_cities: '',
   private_rides_enabled: true,

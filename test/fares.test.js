@@ -14,6 +14,7 @@ before(async () => {
     settings: {
       require_email_verification: false,
       service_cities: '',
+      fees_enabled: true,
       require_driver_approval: false,
       student_price_requires_verification: false,
       driver_commission_pct: 10,

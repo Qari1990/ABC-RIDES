@@ -112,6 +112,10 @@ function dayRange(date) {
   return [start, new Date(start.getTime() + 864e5)];
 }
 
+// App fees (commission, booking fee) are off for the launch: Admin → Settings → Fees.
+const feesOn = () => !!settings.fees_enabled;
+const FREE_NOTE = 'No app fees: ABC Rides is free for now.';
+
 // The launch area (Admin → Settings): rides and requests start and end in these cities.
 const serviceCities = () => String(settings.service_cities || '').split(',').map((c) => c.trim()).filter(Boolean);
 function cityOptions({ all = false } = {}) {
@@ -481,7 +485,7 @@ function searchForm(q = {}, { compact = false } = {}) {
         <input id="to" name="to" list="cities" placeholder="Going to" value="${esc(q.to)}" autocomplete="off" required></span></label>
       <button type="button" class="swap" data-action="swap" aria-label="Swap cities">${icon('arrow-up-down')}</button>
     </div>
-    ${voiceSupport() ? `<button type="button" class="btn ghost block voice-btn" data-action="voice">${icon('mic')} Search by voice <span lang="ur" dir="rtl">· بول کر تلاش کریں</span></button>
+    ${voiceSupport() ? `<button type="button" class="voice-btn" data-action="voice" aria-label="Search by voice">${icon('mic')}<span>Search by voice</span><span class="ur" lang="ur" dir="rtl">بول کر تلاش</span></button>
     <div class="voice-panel card" hidden>
       <p class="small" style="margin-top:0">Say where and when, e.g. <i>“Lahore se Faisalabad kal subah”</i> or <i>“from Sahiwal to Lahore tomorrow”</i>.</p>
       <div class="actions"><button type="button" class="btn small" data-action="listen" data-lang="ur-PK"><span lang="ur">اردو میں بولیں</span></button>
@@ -644,24 +648,36 @@ const checkedValues = (form, name) => [...form.querySelectorAll(`input[name=${na
 
 const views = {};
 
+// A road between two pins, drawn behind the home page title.
+const HERO_ART = `<svg class="hero-art" viewBox="0 0 220 160" aria-hidden="true" focusable="false">
+  <path d="M18 138 C 70 132, 60 70, 112 72 S 170 30, 200 22" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-dasharray="2 9" opacity=".55"/>
+  <circle cx="18" cy="138" r="7" fill="none" stroke="currentColor" stroke-width="3"/>
+  <path d="M200 6c-8 0-14 6-14 14 0 10 14 24 14 24s14-14 14-24c0-8-6-14-14-14z" fill="currentColor"/>
+  <circle cx="200" cy="20" r="5" fill="var(--ink, #062118)"/>
+</svg>`;
+
 views.home = async (page) => {
   const first = me ? me.name.split(' ')[0] : null;
   page.innerHTML = `
     <section class="hero">
+      ${HERO_ART}
       <div class="segmented"><a class="on" href="#/">${icon('search')} Find a ride</a><a href="#/offer">${icon('car')} Offer a ride</a></div>
-      <h1>${first ? `Where to, ${esc(first)}?` : 'Share the ride between cities'}</h1>
-      <p>Travel with verified commuters, students and regular travellers. Pay only for your seat.</p>
+      ${serviceCities().length ? `<p class="eyebrow">${icon('route')} ${serviceCities().map(esc).join(' · ')}</p>` : ''}
+      <h1>${first ? `Where to, <em>${esc(first)}</em>?` : 'Share the ride. <em>Split the cost.</em>'}</h1>
+      <p>Verified drivers, fair per-seat fares and live trip tracking, between cities.</p>
     </section>
     ${searchForm()}
-    ${launchRoutes().length ? `<div class="launch-routes"><span class="small muted">Now live:</span>${launchRoutes().map(([a, b]) => `<a class="chip" href="#/search?from=${encodeURIComponent(a)}&to=${encodeURIComponent(b)}">${esc(a)} → ${esc(b)}</a>`).join('')}</div>` : ''}
-    <div class="audiences">
-      <div><b>${icon('briefcase')}</b>Office commuters</div>
-      <div><b>${icon('graduation-cap')}</b>Students</div>
-      <div><b>${icon('shield-check')}</b>Verified drivers</div>
+    ${launchRoutes().length ? `<div class="section-head"><h2>Popular routes</h2><span class="small muted">Now live</span></div>
+    <div class="launch-routes">${launchRoutes().map(([a, b]) => `<a class="chip" href="#/search?from=${encodeURIComponent(a)}&to=${encodeURIComponent(b)}">${esc(a)} → ${esc(b)}</a>`).join('')}</div>` : ''}
+    <div class="bento">
+      <div class="tile dark">${icon('shield-check')}<b>Verified drivers</b><span>CNIC, licence and car checked by our team</span></div>
+      <div class="tile">${icon('navigation')}<b>Live tracking</b><span>Family can follow your trip</span></div>
+      <div class="tile pink">${icon('venus')}<b>Women-only</b><span>Rides with women drivers</span></div>
+      <div class="tile amber">${icon('graduation-cap')}<b>Students save</b><span>Discounts on many rides</span></div>
     </div>
-    <div class="row two quick">
-      <a class="btn ghost" href="#/offer">${icon('car')} Offer your empty seats</a>
-      <a class="btn ghost" href="#/requests">${icon('hand')} Passengers looking for rides</a>
+    <div class="quick">
+      <a class="action-tile" href="#/offer"><span class="ic">${icon('car')}</span><span><b>Offer your empty seats</b><small>Driving anyway? Share the fuel cost.</small></span>${icon('chevron-right')}</a>
+      <a class="action-tile" href="#/requests"><span class="ic">${icon('hand')}</span><span><b>Passengers looking for rides</b><small>Offer a seat to someone waiting.</small></span>${icon('chevron-right')}</a>
     </div>
     <div class="section-head"><h2>Upcoming rides</h2><a class="small" href="#/requests">Ride requests</a></div>
     <div id="upcoming">${skeletons(3)}</div>
@@ -990,7 +1006,7 @@ views.ride = async (page, q, id) => {
       ${r.home_pickup || r.home_drop ? `<p class="small">🏠 Home ${[r.home_pickup && 'pickup', r.home_drop && 'drop-off'].filter(Boolean).join(' & ')} within ${r.home_radius_km} km.</p>` : ''}` : `
       <div class="list-row"><span class="muted">Pickup</span><span>${esc(r.pickup_point || 'Ask the driver')}</span></div>
       <div class="list-row"><span class="muted">Drop-off</span><span>${esc(r.dropoff_point || 'Ask the driver')}</span></div>`}
-      ${r.vehicle ? `<div class="list-row"><span class="muted">Vehicle</span><span>${esc(r.vehicle)}${r.car ? ` · ${esc(r.car.body_type || '')}${r.car.engine_cc ? `, ${r.car.engine_cc} cc` : ''}` : ''}</span></div>` : ''}
+      ${r.vehicle ? `<div class="list-row"><span class="muted">Vehicle</span><span>${esc(r.vehicle)}${r.car && r.car.body_type ? ` · ${esc(r.car.body_type)}${r.car.engine_cc ? `, ${r.car.engine_cc} cc` : ''}` : ''}</span></div>` : ''}
       ${r.car && r.car.temporary ? '<div class="small muted">🔁 The driver is using a different car for this trip (declared by the driver).</div>' : ''}
       <div class="list-row"><span class="muted">Payment</span><span>${r.payment_methods.map((m) => PAY_LABEL[m]).join(', ')}</span></div>
       ${r.notes ? `<div class="list-row"><span class="muted">Notes</span><span>${esc(r.notes)}</span></div>` : ''}
@@ -1126,7 +1142,7 @@ views.ride = async (page, q, id) => {
     $('#seat-price', page).value = money(price);
     const fare = price * Number(book.seats.value);
     const home = ['pickup', 'drop'].map(homeChoice).filter((h) => h && !h.error).reduce((sum, h) => sum + h.charge, 0);
-    const fee = (f.free ? 0 : Math.ceil((fare * f.pct) / 100)) + f.low_reliability_fee;
+    const fee = feesOn() ? (f.free ? 0 : Math.ceil((fare * f.pct) / 100)) + f.low_reliability_fee : 0;
     const segKm = stopsKnown ? r.stops[seg.alight].km - r.stops[seg.board].km : null;
     const lines = [`You pay the driver <b>${money(fare + home)}</b> directly${home ? ` (incl. ${money(home)} home pickup/drop)` : ''}.`];
     if (segKm) lines.push(`${segKm} km · Rs ${(price / segKm).toFixed(1)}/km ${unit} (bus ≈ Rs ${settings.ref_bus_per_km}/km).`);
@@ -1134,7 +1150,7 @@ views.ride = async (page, q, id) => {
       lines.push(`Booking fee <b>${money(fee)}</b>${f.free ? '' : ` (${f.pct}%)`}${f.low_reliability_fee ? `, incl. ${money(f.low_reliability_fee)} low-reliability fee` : ''}, taken from your wallet when the booking is confirmed.`);
       lines.push(`Wallet: ${money(me.wallet_balance)}${me.wallet_balance < fee ? ' · <a href="#/wallet">Top up</a>' : ''}`);
     } else if (f.free) {
-      lines.push(`No booking fee: ${me.free_confirmations_left} free booking(s) left.`);
+      lines.push(feesOn() ? `No booking fee: ${me.free_confirmations_left} free booking(s) left.` : FREE_NOTE);
     }
     $('#fee-box', page).innerHTML = lines.map((l) => `<div class="small">${l}</div>`).join('');
   };
@@ -1271,7 +1287,7 @@ views.offer = async (page, q) => {
       : setupNeeded('Become a driver', 'To keep passengers safe, drivers register once with their CNIC, driving licence and vehicle. It takes about 3 minutes.', '/driver', 'Register as a driver');
     return;
   }
-  const postingFee = me.reliability < settings.reliability_threshold ? settings.low_reliability_fee : 0;
+  const postingFee = feesOn() && me.reliability < settings.reliability_threshold ? settings.low_reliability_fee : 0;
   const start = q.date ? new Date(`${q.date}T08:00`) : new Date(Date.now() + 864e5);
   if (!q.date) start.setHours(8, 0, 0, 0);
   const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -1495,7 +1511,7 @@ views.offer = async (page, q) => {
     const seats = isPrivate() ? 1 : Math.max(1, Math.min(8, Number(form.seats_total.value) || 1));
     const fuel = Math.round((km * settings.petrol_price) / settings.car_km_per_litre);
     if (isPrivate()) {
-      const commission = me.free_confirmations_left ? 0 : Math.ceil((price * settings.driver_commission_pct) / 100);
+      const commission = !feesOn() || me.free_confirmations_left ? 0 : Math.ceil((price * settings.driver_commission_pct) / 100);
       $('#fare-info', page).innerHTML = `<p>Price for the whole car: <b>${money(price)}</b> (${km} km).</p>
         <p class="small muted">A private car on this distance costs about ${money(roundFare(km * settings.ref_private_car_per_km))} elsewhere.</p>`;
       $('#earnings', page).innerHTML = `<p class="small"><b>You keep ${money(price - commission)}</b> after ${commission ? `${money(commission)} commission` : 'no commission'};
@@ -1504,7 +1520,7 @@ views.offer = async (page, q) => {
     }
     const commissionFor = (k) => {
       const disc = k >= 3 ? settings.share_discount_3_pct : k === 2 ? settings.share_discount_2_pct : 0;
-      return Math.ceil((price * settings.driver_commission_pct * (100 - disc)) / 10000);
+      return feesOn() ? Math.ceil((price * settings.driver_commission_pct * (100 - disc)) / 10000) : 0;
     };
     $('#fare-info', page).innerHTML = `
       <p>Seat price for the whole route: <b>${money(price)}</b>.</p>
@@ -1516,19 +1532,20 @@ views.offer = async (page, q) => {
     for (let n = 1; n <= seats; n++) {
       income += price;
       commission += commissionFor(n);
-      rows.push(`<tr><td>${n}</td><td><b>${money(income - commission)}</b><br><span class="muted">of ${money(income)}</span></td>
-        <td>${money(commission)}${n >= 2 ? `<br><span class="badge confirmed">${n >= 3 ? settings.share_discount_3_pct : settings.share_discount_2_pct}% off</span>` : ''}</td>
+      rows.push(`<tr><td>${n}</td><td><b>${money(income - commission)}</b>${feesOn() ? `<br><span class="muted">of ${money(income)}</span>` : ''}</td>
+        ${feesOn() ? `<td>${money(commission)}${n >= 2 ? `<br><span class="badge confirmed">${n >= 3 ? settings.share_discount_3_pct : settings.share_discount_2_pct}% off</span>` : ''}</td>` : ''}
         <td>${Math.round(((income - commission) / fuel) * 100)}%</td></tr>`);
     }
     $('#earnings', page).innerHTML = `
       <p class="small"><b>What you earn</b> (fuel for ${km} km ≈ ${money(fuel)} at ${money(settings.petrol_price)}/litre, ${settings.car_km_per_litre} km/litre):</p>
       <div class="table-wrap"><table class="earn hiw">
-        <tr><th>Riders</th><th>You keep</th><th>Commission</th><th>Fuel paid</th></tr>
+        <tr><th>Riders</th><th>You keep</th>${feesOn() ? '<th>Commission</th>' : ''}<th>Fuel paid</th></tr>
         ${rows.join('')}
       </table></div>
-      <p class="small">🚗 The more seats you fill, the less commission you pay: ${settings.share_discount_2_pct}% off with 2 passengers, ${settings.share_discount_3_pct}% off with 3 or more,
+      ${feesOn() ? `<p class="small">🚗 The more seats you fill, the less commission you pay: ${settings.share_discount_2_pct}% off with 2 passengers, ${settings.share_discount_3_pct}% off with 3 or more,
         plus +${settings.share_bonus_points} reliability point per extra passenger. Home pickup/drop charges are all yours.
-        ${me.free_confirmations_left ? `Your next ${me.free_confirmations_left} confirmed booking(s) are commission-free.` : ''}</p>`;
+        ${me.free_confirmations_left ? `Your next ${me.free_confirmations_left} confirmed booking(s) are commission-free.` : ''}</p>`
+    : `<p class="small">🚗 Every fare is all yours: ${FREE_NOTE} Each extra passenger also earns you +${settings.share_bonus_points} reliability point.</p>`}`;
   }
 
   // One timer per field, so typing the destination does not cancel the origin lookup.
@@ -1737,10 +1754,10 @@ views['request-offer'] = async (page, _q, id) => {
       if (!h || !at || !form[`home_${k}`] || !form[`home_${k}`].checked) return sum;
       return sum + Math.max(settings.home_pickup_min, roundFare(homeKm(h, at) * settings.home_pickup_per_km));
     }, 0);
-    const commission = me.free_confirmations_left ? 0 : Math.ceil((fare * settings.driver_commission_pct) / 100);
+    const commission = !feesOn() || me.free_confirmations_left ? 0 : Math.ceil((fare * settings.driver_commission_pct) / 100);
     const spare = form.share_remaining.checked ? Math.max(0, Number(form.seats_total.value) - r.seats) : 0;
     $('#ro-earn', page).innerHTML = `${icon('wallet')}<span>From ${esc(r.passenger.name.split(' ')[0])}: <b>${money(fare + homeCharge)}</b>${homeCharge ? ` (incl. ${money(homeCharge)} home pickup/drop)` : ''}.
-      Commission ${commission ? `${money(commission)} (${settings.driver_commission_pct}%)` : 'free'} from your wallet when they accept.
+      ${feesOn() ? `Commission ${commission ? `${money(commission)} (${settings.driver_commission_pct}%)` : 'free'} from your wallet when they accept.` : FREE_NOTE}
       ${spare ? `Your other ${spare} seat(s) go on sale for more passengers.` : ''}</span>`;
   };
   form.addEventListener('input', update);
@@ -2247,10 +2264,10 @@ function setupChecklist(u) {
     <div class="card">
       <h3>Account setup</h3>
       ${rows.join('')}
-      <a class="list-row setup-row" href="#/wallet">
+      ${feesOn() || u.wallet_balance ? `<a class="list-row setup-row" href="#/wallet">
         <span>💳 <b>Wallet ${money(u.wallet_balance)}</b><br><span class="muted small">Reliability ${u.reliability}% · ${u.free_confirmations_left} free booking(s) left</span></span>
         <span class="btn small ghost">Open</span>
-      </a>
+      </a>` : `<div class="list-row"><span>⭐ <b>Reliability ${u.reliability}%</b><br><span class="muted small">${FREE_NOTE}</span></span></div>`}
     </div>`;
 }
 
@@ -2988,7 +3005,7 @@ views.admin = async (page, q) => {
     const groups = [
       ['Booking acceptance', ['booking_mode']],
       ['Fares per km', ['fare_per_km', 'fare_min_per_km', 'fare_max_per_km', 'enforce_fare_limits']],
-      ['Fees', ['driver_commission_pct', 'passenger_commission_pct', 'free_confirmations', 'min_topup']],
+      ['Fees', ['fees_enabled', 'driver_commission_pct', 'passenger_commission_pct', 'free_confirmations', 'min_topup']],
       ['Driver benefits for sharing', ['share_discount_2_pct', 'share_discount_3_pct', 'share_bonus_points']],
       ['Home pickup & drop', ['home_pickup_per_km', 'home_pickup_min', 'home_max_radius_km']],
       ['Calculator & comparisons', ['petrol_price', 'car_km_per_litre', 'ref_bus_per_km', 'ref_private_car_per_km']],
@@ -3342,8 +3359,8 @@ const FAQ = [
     'کرایہ کیسے طے ہوتا ہے؟', 'فاصلے کے حساب سے: فی سیٹ فی کلومیٹر مناسب ریٹ، گاڑی کی کلاس اور اے سی کے مطابق۔ راستے میں بیٹھنے والا صرف اپنے کلومیٹر کا کرایہ دیتا ہے۔'],
   ['How do I pay the driver?', 'Directly: cash, JazzCash, Easypaisa or bank transfer, as the ride says. ABC Rides never holds your fare.',
     'ڈرائیور کو ادائیگی کیسے کروں؟', 'براہِ راست: نقد، جاز کیش، ایزی پیسہ یا بینک ٹرانسفر، جیسا رائیڈ پر لکھا ہو۔ کرایہ ہمارے پاس نہیں آتا۔'],
-  ['What does ABC Rides charge?', () => `Posting rides is free. When a booking is confirmed, a small fee is taken from your ABC Rides wallet (passengers ${settings.passenger_commission_pct}%, drivers ${settings.driver_commission_pct}%). Your first ${settings.free_confirmations} bookings are free. Top up the wallet in Profile → Wallet.`,
-    'اے بی سی رائیڈز کتنی فیس لیتی ہے؟', () => `رائیڈ ڈالنا مفت ہے۔ بکنگ کنفرم ہونے پر والٹ سے تھوڑی فیس کٹتی ہے (مسافر ${settings.passenger_commission_pct}٪، ڈرائیور ${settings.driver_commission_pct}٪)۔ پہلی ${settings.free_confirmations} بکنگز مفت ہیں۔`],
+  ['What does ABC Rides charge?', () => (!feesOn() ? 'Nothing for now: ABC Rides is free. You only pay the driver the fare shown on the ride.' : `Posting rides is free. When a booking is confirmed, a small fee is taken from your ABC Rides wallet (passengers ${settings.passenger_commission_pct}%, drivers ${settings.driver_commission_pct}%). Your first ${settings.free_confirmations} bookings are free. Top up the wallet in Profile → Wallet.`),
+    'اے بی سی رائیڈز کتنی فیس لیتی ہے؟', () => (!feesOn() ? 'ابھی کوئی فیس نہیں: اے بی سی رائیڈز فی الحال مفت ہے۔ آپ صرف ڈرائیور کو رائیڈ پر لکھا کرایہ دیتے ہیں۔' : `رائیڈ ڈالنا مفت ہے۔ بکنگ کنفرم ہونے پر والٹ سے تھوڑی فیس کٹتی ہے (مسافر ${settings.passenger_commission_pct}٪، ڈرائیور ${settings.driver_commission_pct}٪)۔ پہلی ${settings.free_confirmations} بکنگز مفت ہیں۔`)],
   ['Is it safe?', 'Drivers are checked (CNIC, selfie, licence, car and number plate). Everyone has reviews and a reliability score. Women can choose women-only rides. During a trip use SOS to call 15/1122 or alert your emergency contact, and share your trip with family. Always check the number plate before you get in.',
     'کیا یہ محفوظ ہے؟', 'ڈرائیوروں کی جانچ ہوتی ہے (شناختی کارڈ، سیلفی، لائسنس، گاڑی اور نمبر پلیٹ)۔ ہر کسی کے ریویو اور ریلائبلٹی اسکور ہوتے ہیں۔ خواتین صرف خواتین والی رائیڈ چن سکتی ہیں۔ سفر میں SOS سے 15 یا 1122 پر کال کریں۔ بیٹھنے سے پہلے نمبر پلیٹ ضرور چیک کریں۔'],
   ['Why do I verify my email and CNIC?', 'Email verification stops fake accounts. CNIC verification (typed number, photos and a selfie, checked by our team) gives you a ✔ Verified badge, which drivers and passengers trust more.',
@@ -3425,12 +3442,12 @@ views['how-it-works'] = async (page) => {
 
     <div class="card">
       <h3>💳 App fees</h3>
-      <ul class="small">
+      ${!s.fees_enabled ? `<p class="small"><b>ABC Rides is free for now.</b> No commission and no booking fee: passengers pay only the fare, straight to the driver (cash, JazzCash, Easypaisa or bank, as the ride says).</p>` : `<ul class="small">
         <li>Fares are paid directly to the driver (cash, JazzCash, Easypaisa or bank, as the ride says).</li>
         <li>Passengers pay a <b>${s.passenger_commission_pct}%</b> booking fee and drivers a <b>${s.driver_commission_pct}%</b> commission from their ABC Rides wallet when a booking is confirmed. The first ${s.free_confirmations} confirmed bookings are free.</li>
         <li>Drivers who share their car get a commission discount: ${s.share_discount_2_pct}% off with 2 passengers, ${s.share_discount_3_pct}% off with 3 or more.</li>
         <li>Members below ${s.reliability_threshold}% reliability pay an extra ${money(s.low_reliability_fee)} per booking.</li>
-      </ul>
+      </ul>`}
     </div>
 
     <div class="card">
@@ -3484,7 +3501,7 @@ function renderNav(active) {
   const badge = (n) => (n ? `<i class="dot">${n > 9 ? '9+' : n}</i>` : '');
   $('#nav').innerHTML = links.map(([n, href, ic, label, count]) => `<a href="${href}" class="${n === group ? 'active' : ''}">${icon(ic)}${label}${badge(count)}</a>`).join('');
   $('#tabbar').innerHTML = links.map(([n, href, ic, label, count]) => `<a href="${href}" class="${n === group ? 'active' : ''}"><span>${icon(ic)}${badge(count)}</span>${label}</a>`).join('');
-  $('#top-right').innerHTML = me ? `<a class="wallet-chip" href="#/wallet" title="Wallet">${icon('wallet')}${money(me.wallet_balance)}</a>` : '';
+  $('#top-right').innerHTML = me && (feesOn() || me.wallet_balance) ? `<a class="wallet-chip" href="#/wallet" title="Wallet">${icon('wallet')}${money(me.wallet_balance)}</a>` : '';
 }
 
 // Emojis in templates and server messages become matching icons (Lucide), so
