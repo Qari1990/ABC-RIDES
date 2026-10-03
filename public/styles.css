@@ -517,3 +517,5 @@ summary .faq-ur { font-size: .95rem; }
 .live-dot.on { background: #16a34a; box-shadow: 0 0 0 0 rgba(22, 163, 74, .6); animation: livepulse 1.6s infinite; }
 @keyframes livepulse { to { box-shadow: 0 0 0 10px rgba(22, 163, 74, 0); } }
 @media (prefers-reduced-motion: reduce) { .live-dot.on { animation: none; } }
+.voice-btn { margin: 4px 0 10px; }
+.voice-panel { box-shadow: none; border: 1px dashed var(--border); margin-bottom: 10px; }

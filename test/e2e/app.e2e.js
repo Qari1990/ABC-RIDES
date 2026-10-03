@@ -82,6 +82,12 @@ async function openUser(name, { withBridge = false } = {}) {
       window.AbcAndroid = {
         share: (t) => window.bridgeCalls.push(['share', t]),
         changeServer: () => window.bridgeCalls.push(['changeServer']),
+        // The phone's speech recogniser hears an Urdu search.
+        startVoice: (lang) => {
+          window.bridgeCalls.push(['startVoice', lang]);
+          setTimeout(() => window.onVoiceResult(['لاہور سے فیصل آباد کل صبح', 'lahore se faisalabad']), 50);
+        },
+        keepScreenOn: (on) => window.bridgeCalls.push(['keepScreenOn', on]),
         saveServer: () => {},
         getServer: () => location.origin,
       };
@@ -979,6 +985,20 @@ test('24. live trip location: the driver shares, the passenger sees the car, fam
   await sana.page.click('[data-action=track-toggle]');
   await sana.page.waitForFunction(() => /not being shared/.test((document.querySelector('#my-share') || {}).textContent));
   assert.equal(db.prepare('SELECT COUNT(*) n FROM ride_locations WHERE ride_id = ? AND user_id = (SELECT driver_id FROM rides WHERE id = ?)').get(rideId, rideId).n, 0);
+});
+
+test('25. voice search in Urdu fills the search and finds rides', async () => {
+  const ali = users['Ali Student'];
+  await ali.go('/', '[data-action=voice]');
+  await ali.page.click('[data-action=voice]');
+  await ali.page.click('[data-action=listen][data-lang=ur-PK]');
+  await ali.page.waitForURL(/#\/search\?/);
+  const url = new URL(ali.page.url().replace('#/search', 'search'));
+  assert.equal(url.searchParams.get('from'), 'Lahore');
+  assert.equal(url.searchParams.get('to'), 'Faisalabad');
+  assert.equal(url.searchParams.get('time'), 'morning');
+  assert.equal(url.searchParams.get('date'), localDateTime(1, 0).slice(0, 10), 'kal = tomorrow');
+  assert.deepEqual((await ali.page.evaluate(() => window.bridgeCalls)).filter((c) => c[0] === 'startVoice').at(-1), ['startVoice', 'ur-PK']);
 });
 
 test('no JavaScript errors in any page', () => {

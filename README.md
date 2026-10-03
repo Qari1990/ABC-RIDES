@@ -5,6 +5,13 @@ Drivers who are already going between cities post their empty seats; passengers 
 
 ## Features
 
+- **Live trip tracking**: from 2 hours before departure, the driver and confirmed passengers can share their phone's
+  location; everyone on the trip sees the car on the ride map, and a link lets family follow the trip without an
+  account (route, car, plate and live position; no phone numbers). The screen stays on while sharing. Locations are
+  deleted when the trip ends.
+- **Voice search** in Urdu or English ("Lahore se Faisalabad kal subah", "لاہور سے ساہیوال پرسوں دو سیٹ"): cities,
+  day, time of day, seats and women-only are understood (`public/voice.js`). The Android app (1.7+) uses the phone's
+  speech recogniser; browsers use the Web Speech API.
 - **Launch area**: rides and requests start and end in the cities set in **Admin → Settings → Launch area**
   (default Lahore, Sahiwal and Faisalabad; empty = everywhere). The home page shows those routes as quick links.
 - **Help & FAQ** (`#/help`): common questions in English and Urdu, emergency numbers, and a WhatsApp support button

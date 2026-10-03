@@ -11,8 +11,10 @@ import android.graphics.Color;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.speech.RecognizerIntent;
 import android.view.View;
 import android.view.WindowInsets;
+import android.view.WindowManager;
 import android.webkit.DownloadListener;
 import android.webkit.GeolocationPermissions;
 import android.webkit.JavascriptInterface;
@@ -26,6 +28,10 @@ import android.widget.FrameLayout;
 import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
+import java.util.ArrayList;
+
+import org.json.JSONArray;
+import org.json.JSONObject;
 
 /**
  * ABC Rides for Android: a WebView shell around the ABC Rides web app.
@@ -33,7 +39,9 @@ import java.lang.reflect.Proxy;
  * The app talks to an ABC Rides server whose address the user enters on first
  * launch (or that is baked in at build time). It adds the native pieces a
  * browser tab lacks: photo picking for ID verification, location for SOS,
- * the share sheet, dialer/SMS links and the back button.
+ * the share sheet, dialer/SMS links, voice search (the phone's own speech
+ * recogniser, Urdu or English), keeping the screen on during live trip
+ * tracking, and the back button.
  */
 public class MainActivity extends Activity {
     private static final String PREFS = "abc_rides";
@@ -43,6 +51,7 @@ public class MainActivity extends Activity {
     private static final int REQUEST_LOCATION = 2;
     private static final String BRAND = "#0b7a5e";
     private static final int REQUEST_NOTIFY = 3;
+    private static final int REQUEST_VOICE = 4;
     /** Intent extra with an app page to open, e.g. "/chat/12" (from a notification). */
     static final String EXTRA_LINK = "link";
 
@@ -371,6 +380,39 @@ public class MainActivity extends Activity {
             return token == null ? "" : token.toString();
         }
 
+        /** Listens with the phone's speech recogniser; results go to window.onVoiceResult(list, error). */
+        @JavascriptInterface
+        public void startVoice(final String lang) {
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    Intent listen = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
+                    listen.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
+                    listen.putExtra(RecognizerIntent.EXTRA_LANGUAGE, lang);
+                    listen.putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, lang);
+                    listen.putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 5);
+                    listen.putExtra(RecognizerIntent.EXTRA_PROMPT, lang.startsWith("ur") ? "کہاں جانا ہے؟ مثلاً لاہور سے فیصل آباد کل صبح" : "Where to? e.g. Lahore to Faisalabad tomorrow morning");
+                    try {
+                        startActivityForResult(listen, REQUEST_VOICE);
+                    } catch (ActivityNotFoundException e) {
+                        voiceResult(null, "unavailable");
+                    }
+                }
+            });
+        }
+
+        /** Keeps the screen on while the trip's live location is being shared. */
+        @JavascriptInterface
+        public void keepScreenOn(final boolean on) {
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    if (on) getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+                    else getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+                }
+            });
+        }
+
         @JavascriptInterface
         public void share(String text) {
             Intent send = new Intent(Intent.ACTION_SEND);
@@ -382,12 +424,25 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        if (requestCode == REQUEST_VOICE) {
+            ArrayList<String> heard = resultCode == RESULT_OK && data != null
+                ? data.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS) : null;
+            voiceResult(heard, heard == null ? "none" : null);
+            return;
+        }
         if (requestCode == REQUEST_FILE && fileCallback != null) {
             fileCallback.onReceiveValue(WebChromeClient.FileChooserParams.parseResult(resultCode, data));
             fileCallback = null;
             return;
         }
         super.onActivityResult(requestCode, resultCode, data);
+    }
+
+    /** Hands what was heard (or why nothing was) to the web app. */
+    private void voiceResult(ArrayList<String> heard, String error) {
+        String list = heard == null ? "[]" : new JSONArray(heard).toString();
+        String err = error == null ? "null" : JSONObject.quote(error);
+        web.evaluateJavascript("window.onVoiceResult && window.onVoiceResult(" + list + ", " + err + ")", null);
     }
 
     @Override

@@ -9,7 +9,7 @@ const path = require('node:path');
 // A fingerprint of the app's files, so open apps notice a new version and offer to refresh.
 const PUBLIC_DIR = path.join(__dirname, '..', '..', 'public');
 const BUILD = crypto.createHash('sha256')
-  .update(['app.js', 'maps.js', 'icons.js', 'styles.css', 'index.html'].map((f) => {
+  .update(['app.js', 'maps.js', 'icons.js', 'voice.js', 'styles.css', 'index.html'].map((f) => {
     try { return fs.readFileSync(path.join(PUBLIC_DIR, f)); } catch { return ''; }
   }).join('\n'))
   .digest('hex').slice(0, 12);

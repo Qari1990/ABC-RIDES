@@ -481,6 +481,13 @@ function searchForm(q = {}, { compact = false } = {}) {
         <input id="to" name="to" list="cities" placeholder="Going to" value="${esc(q.to)}" autocomplete="off" required></span></label>
       <button type="button" class="swap" data-action="swap" aria-label="Swap cities">${icon('arrow-up-down')}</button>
     </div>
+    ${voiceSupport() ? `<button type="button" class="btn ghost block voice-btn" data-action="voice">${icon('mic')} Search by voice <span lang="ur" dir="rtl">· بول کر تلاش کریں</span></button>
+    <div class="voice-panel card" hidden>
+      <p class="small" style="margin-top:0">Say where and when, e.g. <i>“Lahore se Faisalabad kal subah”</i> or <i>“from Sahiwal to Lahore tomorrow”</i>.</p>
+      <div class="actions"><button type="button" class="btn small" data-action="listen" data-lang="ur-PK"><span lang="ur">اردو میں بولیں</span></button>
+        <button type="button" class="btn small ghost" data-action="listen" data-lang="en-PK">Speak English</button></div>
+      <p class="small muted voice-status" aria-live="polite"></p>
+    </div>` : ''}
     <div class="quick-chips" role="group" aria-label="Date">
       <button type="button" data-date="" class="${!q.date ? 'on' : ''}">Any day</button>
       <button type="button" data-date="${today}" class="${q.date === today ? 'on' : ''}">Today</button>
@@ -518,6 +525,12 @@ function bindSearch(page) {
     }
     const btn = e.target.closest('[data-action]');
     if (!btn) return;
+    if (btn.dataset.action === 'voice') {
+      if (voiceSupport() === 'update') { toast('Update the app to search by voice: Profile → Check for updates', true); return; }
+      $('.voice-panel', form).hidden = !$('.voice-panel', form).hidden;
+      return;
+    }
+    if (btn.dataset.action === 'listen') { voiceSearch(form, btn.dataset.lang); return; }
     if (btn.dataset.action === 'swap') [form.from.value, form.to.value] = [form.to.value, form.from.value];
     if (btn.dataset.action.startsWith('seat-')) {
       const n = Math.max(1, Math.min(4, Number(form.seats.value) + (btn.dataset.action === 'seat-plus' ? 1 : -1)));
@@ -531,6 +544,72 @@ function bindSearch(page) {
     if (d.women_only) params.set('women_only', 'true');
     location.hash = `#/search?${params}`;
   });
+}
+
+// ---- Voice search (Urdu or English) ------------------------------------------------
+// In the Android app the phone's own speech recogniser does the listening (app 1.7+);
+// in Chrome and other browsers, the Web Speech API. voice.js understands what was said.
+const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
+function voiceSupport() {
+  if (nativeApp) return typeof nativeApp.startVoice === 'function' ? 'native' : 'update';
+  return SpeechRec ? 'web' : null;
+}
+function listen(lang) {
+  return new Promise((resolve, reject) => {
+    if (voiceSupport() === 'native') {
+      window.onVoiceResult = (results, error) => {
+        window.onVoiceResult = null;
+        if (results && results.length) resolve(results);
+        else reject(new Error(error === 'unavailable' ? 'Voice input is not available on this phone. Install or update the Google app.' : 'Didn’t catch that. Please try again.'));
+      };
+      nativeApp.startVoice(lang);
+      return;
+    }
+    const rec = new SpeechRec();
+    rec.lang = lang;
+    rec.interimResults = false;
+    rec.maxAlternatives = 5;
+    let heard = null;
+    rec.onresult = (e) => { heard = [...e.results[0]].map((a) => a.transcript); };
+    rec.onerror = (e) => reject(new Error(e.error === 'not-allowed' || e.error === 'service-not-allowed'
+      ? 'Microphone permission was refused. Allow the microphone for this site and try again.'
+      : e.error === 'no-speech' ? 'Didn’t hear anything. Tap and speak again.' : 'Voice search failed. Please try again.'));
+    rec.onend = () => (heard ? resolve(heard) : reject(new Error('Didn’t hear anything. Tap and speak again.')));
+    rec.start();
+  });
+}
+async function voiceSearch(form, lang) {
+  const status = $('.voice-status', form);
+  status.textContent = lang.startsWith('ur') ? 'سن رہے ہیں… بولیں' : 'Listening… speak now';
+  let results;
+  try {
+    results = await listen(lang);
+  } catch (err) {
+    status.textContent = err.message;
+    return;
+  }
+  // The first alternative the parser understands best.
+  const parsed = results.map((t) => [t, parseVoiceQuery(t, cities)])
+    .sort((a, b) => (!!b[1].from + !!b[1].to) - (!!a[1].from + !!a[1].to))[0];
+  const [said, q] = parsed;
+  status.innerHTML = `Heard: “${esc(said)}”`;
+  if (q.from) form.from.value = q.from;
+  if (q.to) form.to.value = q.to;
+  if (q.date) {
+    form.date.value = q.date;
+    const chip = form.querySelector(`[data-date="${q.date}"]`) || form.querySelector('[data-date=pick]');
+    form.querySelectorAll('[data-date]').forEach((b) => b.classList.toggle('on', b === chip));
+    $('#date-field', form).hidden = chip.dataset.date !== 'pick';
+  }
+  if (q.time) form.time.value = q.time;
+  if (q.seats) { form.seats.value = q.seats; $('#seats-out', form).textContent = q.seats; }
+  if (q.women_only) form.women_only.checked = true;
+  if (form.from.value && form.to.value) {
+    form.requestSubmit();
+  } else {
+    (form.from.value ? form.to : form.from).focus();
+    status.innerHTML += `<br>${form.from.value ? 'Where are you going?' : 'Where are you leaving from?'} Say it again or type it.`;
+  }
 }
 
 const skeletons = (n = 3) => Array.from({ length: n }, () => '<div class="skeleton"></div>').join('');
