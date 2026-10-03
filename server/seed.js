@@ -116,6 +116,8 @@ function removeDemoData(db) {
       DELETE FROM reports WHERE reporter_id IN ${who} OR reported_user_id IN ${who} OR ride_id IN ${rides};
       DELETE FROM request_offers WHERE driver_id IN ${who} OR ride_id IN ${rides}
         OR request_id IN (SELECT id FROM ride_requests WHERE passenger_id IN ${who});
+      DELETE FROM ride_locations WHERE user_id IN ${who} OR ride_id IN ${rides};
+      DELETE FROM track_links WHERE user_id IN ${who} OR ride_id IN ${rides};
       DELETE FROM bookings WHERE passenger_id IN ${who} OR ride_id IN ${rides};
       DELETE FROM rides WHERE driver_id IN ${who};
       DELETE FROM ride_requests WHERE passenger_id IN ${who};
@@ -123,6 +125,7 @@ function removeDemoData(db) {
       DELETE FROM documents WHERE user_id IN ${who};
       DELETE FROM vehicles WHERE user_id IN ${who};
       DELETE FROM phone_codes WHERE user_id IN ${who};
+      DELETE FROM email_codes WHERE user_id IN ${who};
       DELETE FROM reset_codes WHERE user_id IN ${who};
       DELETE FROM topup_requests WHERE user_id IN ${who};
       DELETE FROM push_subscriptions WHERE user_id IN ${who};

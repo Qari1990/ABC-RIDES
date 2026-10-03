@@ -81,6 +81,10 @@ function runLifecycle(db, now = new Date()) {
   }
   db.prepare(`UPDATE request_offers SET status = 'expired' WHERE status = 'pending'
     AND (departure_at < ? OR request_id IN (SELECT id FROM ride_requests WHERE status != 'open'))`).run(iso);
+  // Live locations are only kept while a trip is on; tracking links a day longer.
+  db.prepare(`DELETE FROM ride_locations WHERE ride_id IN (SELECT id FROM rides WHERE status != 'scheduled')`).run();
+  db.prepare(`DELETE FROM track_links WHERE ride_id IN (SELECT id FROM rides WHERE status != 'scheduled' AND departure_at < ?)`)
+    .run(new Date(now.getTime() - 2 * 864e5).toISOString());
   return counts;
 }
 

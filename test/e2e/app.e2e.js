@@ -941,6 +941,46 @@ test('23. Help & FAQ with WhatsApp support, and the launch routes on the home pa
   setSettings(db, { service_cities: '', support_whatsapp: '' });
 });
 
+test('24. live trip location: the driver shares, the passenger sees the car, family follows a link', async () => {
+  const sana = users['Sana Driver'];
+  const zara = users['Zara Traveller'];
+  // A ride leaving within the hour, with Zara confirmed on it.
+  const rideId = await sana.page.evaluate(async () => {
+    const [a] = await api('/places?city=Lahore');
+    const [b] = await api('/places?city=Faisalabad');
+    const posted = await api('/rides', { method: 'POST', body: { stops: [a.id, b.id], departure_at: new Date(Date.now() + 45 * 60000).toISOString(), seats_total: 3 } });
+    return posted[0].id;
+  });
+  const bookingId = await zara.page.evaluate(async (id) => (await api(`/rides/${id}/bookings`, { method: 'POST', body: { seats: 1 } })).id, rideId);
+  await sana.page.evaluate(async (id) => api(`/bookings/${id}/confirm`, { method: 'POST' }), bookingId).catch(() => {});
+
+  await sana.go(`/ride/${rideId}`, '#live-card');
+  await sana.page.click('[data-action=track-toggle]');
+  await sana.page.waitForFunction(() => /Sharing your location · sent/.test((document.querySelector('#my-share') || {}).textContent));
+  assert.equal(await sana.page.textContent('[data-action=track-toggle]'), '⏹ Stop sharing');
+  const row = db.prepare('SELECT lat, lon FROM ride_locations WHERE ride_id = ?').get(rideId);
+  assert.ok(Math.abs(row.lat - 31.52) < 0.01, 'the phone’s GPS position');
+
+  await zara.go(`/ride/${rideId}`, '#live-card');
+  await zara.page.waitForFunction(() => /The car \(Sana\): just now/.test((document.querySelector('#others-live') || {}).textContent));
+  await zara.page.waitForSelector('#ride-map .map-pin.live.driver');
+
+  // Family: a link that works without an account.
+  const path = await zara.page.evaluate(async (id) => (await api(`/rides/${id}/track-link`, { method: 'POST' })).path, rideId);
+  const family = await browser.newContext({ viewport: { width: 390, height: 844 } });
+  const fp = await family.newPage();
+  fp.on('pageerror', (e) => errors.push(`family: ${e.message}`));
+  await fp.goto(`${base}#${path}`);
+  await fp.waitForSelector('#track-status >> text=Live:');
+  assert.match(await fp.textContent('#view'), /Zara[\s\S]*shared this trip[\s\S]*Sana[\s\S]*LED-2023/);
+  await fp.waitForSelector('#track-map .map-pin.live');
+  await family.close();
+
+  await sana.page.click('[data-action=track-toggle]');
+  await sana.page.waitForFunction(() => /not being shared/.test((document.querySelector('#my-share') || {}).textContent));
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM ride_locations WHERE ride_id = ? AND user_id = (SELECT driver_id FROM rides WHERE id = ?)').get(rideId, rideId).n, 0);
+});
+
 test('no JavaScript errors in any page', () => {
   assert.deepEqual(errors, []);
 });

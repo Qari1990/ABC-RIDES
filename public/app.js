@@ -665,6 +665,78 @@ function sosPanel(r) {
     </div>`;
 }
 
+// ---- Live trip tracking ---------------------------------------------------------
+// While a trip is on, this phone can send its position every ~20 seconds (or
+// when it moves). It keeps working while you use other pages of the app; the
+// screen is kept on because phones pause location for apps in the background.
+const tracker = { rideId: null, watch: null, lastSent: 0, lastPos: null, sending: false, error: null, wakeLock: null };
+const tripOpen = (r) => {
+  const dep = new Date(r.departure_at).getTime();
+  const arr = r.arrival_at ? new Date(r.arrival_at).getTime() : dep + 4 * 36e5;
+  return r.status === 'scheduled' && Date.now() >= dep - 2 * 36e5 && Date.now() <= arr + 8 * 36e5;
+};
+async function keepAwake(on) {
+  if (nativeApp && typeof nativeApp.keepScreenOn === 'function') nativeApp.keepScreenOn(on);
+  try {
+    if (on && navigator.wakeLock && !tracker.wakeLock) {
+      tracker.wakeLock = await navigator.wakeLock.request('screen');
+      tracker.wakeLock.addEventListener('release', () => { tracker.wakeLock = null; });
+    } else if (!on && tracker.wakeLock) {
+      await tracker.wakeLock.release();
+      tracker.wakeLock = null;
+    }
+  } catch { /* not supported or not allowed: the app still works */ }
+}
+function startTracking(rideId) {
+  if (!navigator.geolocation) throw new Error('This phone cannot share its location');
+  stopTracking({ tell: false });
+  Object.assign(tracker, { rideId, lastSent: 0, lastPos: null, error: null });
+  tracker.watch = navigator.geolocation.watchPosition(async (pos) => {
+    const p = { lat: pos.coords.latitude, lon: pos.coords.longitude, accuracy: pos.coords.accuracy };
+    const moved = tracker.lastPos ? haversineKm(p.lat, p.lon, tracker.lastPos.lat, tracker.lastPos.lon) * 1000 : Infinity;
+    if (tracker.sending || (Date.now() - tracker.lastSent < 20000 && moved < 150)) return;
+    tracker.sending = true;
+    try {
+      await api(`/rides/${rideId}/location`, { method: 'POST', body: p });
+      Object.assign(tracker, { lastSent: Date.now(), lastPos: p, error: null });
+    } catch (err) {
+      tracker.error = err.message;
+      if (err.status === 400 || err.status === 403) stopTracking({ tell: false });
+    } finally {
+      tracker.sending = false;
+      updateTrackerUi();
+    }
+  }, (err) => {
+    tracker.error = err.code === 1
+      ? 'Location permission was refused. Allow location for ABC Rides in your phone settings.'
+      : 'Waiting for GPS… go near a window or outside.';
+    updateTrackerUi();
+  }, { enableHighAccuracy: true, maximumAge: 10000, timeout: 30000 });
+  keepAwake(true);
+  updateTrackerUi();
+}
+function stopTracking({ tell = true } = {}) {
+  if (tracker.watch != null) navigator.geolocation.clearWatch(tracker.watch);
+  if (tell && tracker.rideId) api(`/rides/${tracker.rideId}/location`, { method: 'DELETE' }).catch(() => {});
+  Object.assign(tracker, { rideId: null, watch: null });
+  keepAwake(false);
+  updateTrackerUi();
+}
+function updateTrackerUi() {
+  const box = document.querySelector('#live-card');
+  if (!box) return;
+  const mine = String(tracker.rideId) === box.dataset.ride;
+  const secs = tracker.lastSent ? Math.round((Date.now() - tracker.lastSent) / 1000) : null;
+  box.querySelector('#my-share').innerHTML = mine
+    ? `<span class="live-dot on"></span><span><b>Sharing your location</b>${secs != null ? ` · sent ${secs < 5 ? 'just now' : `${secs}s ago`}` : ' · finding you…'}${tracker.error ? `<br><span class="small" style="color:var(--danger)">${esc(tracker.error)}</span>` : ''}</span>`
+    : `<span class="live-dot"></span><span>Your location is not being shared${tracker.error ? `<br><span class="small" style="color:var(--danger)">${esc(tracker.error)}</span>` : ''}</span>`;
+  box.querySelector('[data-action=track-toggle]').textContent = mine ? '⏹ Stop sharing' : '📍 Share my live location';
+}
+const agoText = (iso) => {
+  const mins = Math.max(0, Math.round((Date.now() - new Date(iso)) / 60000));
+  return mins < 1 ? 'just now' : `${mins} min ago`;
+};
+
 views.ride = async (page, q, id) => {
   const qs = new URLSearchParams(Object.entries({ board: q.board, alight: q.alight, from: q.from, to: q.to }).filter(([, v]) => v != null));
   const [r] = await Promise.all([api(`/rides/${id}?${qs}`), refreshMe(), loadCars()]);
@@ -855,6 +927,17 @@ views.ride = async (page, q, id) => {
         <button class="btn danger" data-action="sos">🚨 SOS</button>
       </div>
       ${sosPanel(r)}` : ''}
+    ${me && onTrip && tripOpen(r) ? `
+    <div class="card" id="live-card" data-ride="${r.id}">
+      <h3>📍 Live trip location</h3>
+      <div class="live-status small" id="my-share"></div>
+      <div class="small" id="others-live" style="margin-top:6px"></div>
+      <div class="actions" style="margin-top:10px">
+        <button class="btn small" data-action="track-toggle">📍 Share my live location</button>
+        <button class="btn small ghost" data-action="track-link">👪 Send tracking link to family</button>
+      </div>
+      <p class="small muted" style="margin:8px 0 0">${isDriver ? 'Passengers see the car on the map.' : 'Everyone on this trip sees it on the map.'} Keep ABC Rides open while sharing (the screen stays on). Locations are deleted when the trip ends.</p>
+    </div>` : ''}
     ${me && onTrip && whatsappLink() ? `<p class="small" style="margin:0 0 12px">Problem with this trip? ${whatsappButton(`I need help with ride #${r.id} (${r.from_city} → ${r.to_city}, ${when(r.departure_at)}).`, 'Tell ABC Rides support', 'btn small ghost')}</p>` : ''}
     <div class="card">
       <h3>Driver</h3>
@@ -866,6 +949,34 @@ views.ride = async (page, q, id) => {
     ${reviewSection}`;
 
   const book = $('#book', page);
+  let rideMap = null;
+  let liveNow = [];
+  const liveCard = $('#live-card', page);
+  if (liveCard) {
+    updateTrackerUi();
+    const pollLive = async () => {
+      liveNow = (await api(`/rides/${r.id}/live`)).locations.filter((p) => p.user_id !== me.id || String(tracker.rideId) !== String(r.id));
+      if (rideMap) liveMarkers(rideMap, liveNow);
+      $('#others-live', page).innerHTML = liveNow.length
+        ? liveNow.map((p) => `🟢 ${p.role === 'driver' ? `The car (${esc(p.name)})` : esc(p.name)}: ${agoText(p.at)} · <a href="${mapLink(p.lat, p.lon)}" target="_blank" rel="noopener">map</a>`).join('<br>')
+        : `<span class="muted">${isDriver ? 'No passenger is sharing their location.' : 'The driver isn’t sharing the car’s location yet.'}</span>`;
+      updateTrackerUi();
+    };
+    pollLive().catch(() => {});
+    live(page, pollLive, 15000);
+    onClick(liveCard, async (action) => {
+      if (action === 'track-toggle') {
+        if (String(tracker.rideId) === String(r.id)) stopTracking();
+        else startTracking(r.id);
+        return;
+      }
+      if (action === 'track-link') {
+        const { path } = await api(`/rides/${r.id}/track-link`, { method: 'POST' });
+        const url = `${location.origin}/#${path}`;
+        shareText(`Follow my ABC Rides trip ${r.from_city} → ${r.to_city} live (${when(r.departure_at)}): ${url}`);
+      }
+    });
+  }
   const drawRideMap = (seg = r.segment) => {
     const el = $('#ride-map', page);
     if (!el) return;
@@ -882,6 +993,7 @@ views.ride = async (page, q, id) => {
     }
     const mine = activeBooking ? { board: b.board_stop ?? 0, alight: b.alight_stop ?? lastStop } : seg;
     routeMap(el, r.stops, { board: isDriver ? 0 : mine.board, alight: isDriver ? lastStop : mine.alight, homes })
+      .then((m) => { rideMap = m; liveMarkers(m, liveNow); })
       .catch((err) => { console.warn('Map failed:', err); el.hidden = true; });
   };
   if (stopsKnown) drawRideMap();
@@ -3091,6 +3203,52 @@ window.addEventListener('unhandledrejection', (e) => {
   reportError(r.message || String(r), r.stack);
 });
 
+// ---- Family tracking page (public, from a link someone on the trip shared) ----
+views.track = async (page, _q, token) => {
+  const load = () => api(`/track/${encodeURIComponent(token)}`);
+  let t;
+  try {
+    t = await load();
+  } catch (err) {
+    page.innerHTML = `<div class="card empty">${icon('map-pin', 'i-big')}<h2>${err.status === 410 ? 'This trip has ended' : 'Link not found'}</h2>
+      <p>${err.status === 410 ? 'Live tracking stops when the trip is over.' : 'Please ask for a new tracking link.'}</p></div>`;
+    return;
+  }
+  page.innerHTML = `
+    <h1>🚗 ${esc(t.from_city)} → ${esc(t.to_city)}</h1>
+    <div class="card">
+      <p style="margin-top:0"><b>${esc(t.shared_by)}</b> shared this trip with you.</p>
+      <div class="list-row"><span class="muted">Driver</span><span>${esc(t.driver)}</span></div>
+      ${t.vehicle ? `<div class="list-row"><span class="muted">Car</span><span>${esc(t.vehicle)}${t.plate ? ` · <b class="plate">${esc(t.plate)}</b>` : ''}</span></div>` : ''}
+      <div class="list-row"><span class="muted">Departure</span><span>${when(t.departure_at)}</span></div>
+      ${t.arrival_at ? `<div class="list-row"><span class="muted">Arrival (approx.)</span><span>${when(t.arrival_at)}</span></div>` : ''}
+      <div class="live-status small" id="track-status" style="margin-top:10px"></div>
+    </div>
+    <div class="map" id="track-map" role="img" aria-label="Map of the trip"></div>
+    <div class="card small">
+      Worried? Call ${esc(t.shared_by)} first. Emergency: Police <a href="tel:15">15</a> · Rescue <a href="tel:1122">1122</a> · Motorway Police <a href="tel:130">130</a>
+    </div>
+    <p class="small muted">ABC Rides: shared rides between cities. <a href="#/">Find a ride</a></p>`;
+  let map = null;
+  let first = true;
+  const show = () => {
+    const car = t.locations[0];
+    $('#track-status', page).innerHTML = t.status === 'completed'
+      ? '<span class="live-dot"></span><span><b>Trip completed ✅</b></span>'
+      : car
+        ? `<span class="live-dot on"></span><span><b>Live:</b> ${car.role === 'driver' ? 'the car' : `${esc(car.name)}’s phone`} · updated ${agoText(car.at)} · <a href="${mapLink(car.lat, car.lon)}" target="_blank" rel="noopener">Google Maps</a></span>`
+        : '<span class="live-dot"></span><span>Waiting for the live location… it appears once someone on the trip shares it.</span>';
+    if (map) { liveMarkers(map, t.locations, { follow: first && !!car }); if (car) first = false; }
+  };
+  show();
+  if (t.stops.length >= 2) {
+    routeMap($('#track-map', page), t.stops).then((m) => { map = m; show(); }).catch(() => { $('#track-map', page).hidden = true; });
+  } else {
+    $('#track-map', page).hidden = true;
+  }
+  live(page, async () => { t = await load(); show(); }, 15000);
+};
+
 // ---- Help & FAQ (public), in English and Urdu ---------------------------------
 const FAQ = [
   ['What is ABC Rides?', 'ABC Rides connects people travelling between cities. Drivers who are going anyway share their empty seats, and passengers share the cost. It is not a taxi service.',
@@ -3231,7 +3389,7 @@ function parseHash() {
 
 const NAV_GROUP = {
   search: 'home', requests: 'offer', 'request-offer': 'offer', register: 'login', forgot: 'login', chat: 'inbox', admin: 'profile', user: 'home', ride: 'trips',
-  'verify-phone': 'profile', 'verify-email': 'profile', 'verify-id': 'profile', driver: 'offer', wallet: 'profile', 'accept-terms': 'profile', 'how-it-works': 'home', help: 'profile',
+  'verify-phone': 'profile', 'verify-email': 'profile', 'verify-id': 'profile', driver: 'offer', wallet: 'profile', 'accept-terms': 'profile', 'how-it-works': 'home', help: 'profile', track: 'home',
 };
 
 function renderNav(active) {
@@ -3302,6 +3460,7 @@ async function refreshUnread() {
 // Back in the app (or tab) after a while: catch up straight away.
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState !== 'visible') return;
+  if (tracker.rideId) keepAwake(true); // the screen lock is dropped while the app is hidden
   refreshUnread();
   checkAppUpdate();
   liveHooks.forEach((run) => run());

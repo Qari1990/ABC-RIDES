@@ -220,6 +220,26 @@ CREATE TABLE IF NOT EXISTS route_distances (
   updated_at  TEXT NOT NULL
 );
 
+-- Live location during a trip: the latest position from each phone that is
+-- sharing (driver or passenger). Deleted when the trip ends.
+CREATE TABLE IF NOT EXISTS ride_locations (
+  ride_id   INTEGER NOT NULL REFERENCES rides(id),
+  user_id   INTEGER NOT NULL REFERENCES users(id),
+  lat       REAL NOT NULL,
+  lon       REAL NOT NULL,
+  accuracy  REAL,
+  at        TEXT NOT NULL,
+  PRIMARY KEY (ride_id, user_id)
+);
+
+-- Links people on a trip share with family so they can follow it without an account.
+CREATE TABLE IF NOT EXISTS track_links (
+  token       TEXT PRIMARY KEY,
+  ride_id     INTEGER NOT NULL REFERENCES rides(id),
+  user_id     INTEGER NOT NULL REFERENCES users(id),
+  created_at  TEXT NOT NULL
+);
+
 -- A driver's offer to take a passenger's ride request. Accepting one creates
 -- the ride and a confirmed booking (fees are charged then).
 CREATE TABLE IF NOT EXISTS request_offers (

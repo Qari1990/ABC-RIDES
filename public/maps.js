@@ -175,3 +175,22 @@ async function locationPicker(el, { around, radiusKm, value, onPick }) {
   });
   return { set: (v) => { place(v.lat, v.lon); map.panTo([v.lat, v.lon], { animate: false }); } };
 }
+
+/** Live positions on a trip map: the car (driver's phone) and passengers' phones. Redraws on each call. */
+function liveMarkers(map, locations, { follow = false } = {}) {
+  const L = window.L;
+  if (!L || !map || !map._container || !map._container.isConnected) return;
+  if (map._liveLayer) map._liveLayer.clearLayers();
+  else map._liveLayer = L.layerGroup().addTo(map);
+  for (const p of locations) {
+    const mins = Math.max(0, Math.round((Date.now() - new Date(p.at)) / 60000));
+    if (p.accuracy && p.accuracy < 3000) {
+      L.circle([p.lat, p.lon], { radius: p.accuracy, color: '#f59e0b', weight: 1, fillOpacity: 0.1, interactive: false }).addTo(map._liveLayer);
+    }
+    L.marker([p.lat, p.lon], { icon: pin(L, p.role === 'driver' ? '🚗' : '●', `live ${p.role}`), zIndexOffset: 1000, title: p.name })
+      .bindPopup(`<b>${esc(p.name)}</b> ${p.role === 'driver' ? '(driver)' : '(passenger)'}<br>${mins < 1 ? 'just now' : `${mins} min ago`}<br>
+        <a href="${googleMaps(p.lat, p.lon)}" target="_blank" rel="noopener">Open in Google Maps</a>`)
+      .addTo(map._liveLayer);
+  }
+  if (follow && locations.length) map.setView([locations[0].lat, locations[0].lon], Math.max(map.getZoom(), 11), { animate: false });
+}

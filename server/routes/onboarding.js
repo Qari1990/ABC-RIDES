@@ -305,7 +305,7 @@ module.exports = function onboardingRouter(db, { uploadDir }) {
         phone_verified = 0, licence_number = NULL, suspended = 1, role = 'user' WHERE id = ?`)
         .run(`deleted-${u.id}@deleted.invalid`, crypto.randomBytes(32).toString('hex'), u.id);
       db.prepare(`UPDATE request_offers SET status = 'withdrawn' WHERE driver_id = ? AND status = 'pending'`).run(u.id);
-      for (const t of ['documents', 'vehicles', 'phone_codes', 'email_codes', 'reset_codes', 'push_subscriptions', 'app_push_tokens', 'sessions', 'notifications', 'ride_requests']) {
+      for (const t of ['documents', 'vehicles', 'phone_codes', 'email_codes', 'reset_codes', 'ride_locations', 'track_links', 'push_subscriptions', 'app_push_tokens', 'sessions', 'notifications', 'ride_requests']) {
         const col = t === 'ride_requests' ? 'passenger_id' : 'user_id';
         db.prepare(`DELETE FROM ${t} WHERE ${col} = ?`).run(u.id);
       }

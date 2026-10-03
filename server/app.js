@@ -11,6 +11,7 @@ const adminRouter = require('./routes/admin');
 const onboardingRouter = require('./routes/onboarding');
 const walletRouter = require('./routes/wallet');
 const placesRouter = require('./routes/places');
+const trackingRouter = require('./routes/tracking');
 const { securityHeaders, rateLimiter } = require('./security');
 const { logError } = require('./errorlog');
 const { catalog } = require('./cars');
@@ -51,6 +52,7 @@ function createApp(db, { uploadDir = process.env.UPLOAD_DIR || path.join(__dirna
   api.use(requestsRouter(db));
   api.use(offersRouter(db));
   api.use(messagesRouter(db));
+  api.use(trackingRouter(db));
   api.use('/admin', adminRouter(db, { uploadDir }));
   api.use((_req, res) => res.status(404).json({ error: 'Not found' }));
   app.use('/api', api);
